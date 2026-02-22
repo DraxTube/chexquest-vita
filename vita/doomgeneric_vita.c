@@ -12,12 +12,12 @@
 #include <psp2/apputil.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
-#include <psp2/rtc.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <time.h>
 
 #define TICRATE 35
 #define SCREENWIDTH 320
@@ -42,9 +42,16 @@ int mouse_threshold = 0;
 /* Display */
 static SceUID fb_memuid;
 static void *fb_base = NULL;
-static uint64_t start_tick = 0;
 static int display_ready = 0;
 static int frame_count = 0;
+
+/* Timing - use simple tick counter */
+static uint32_t base_time = 0;
+
+static uint32_t get_ms(void) {
+    /* Use sceKernelGetProcessTimeLow - returns microseconds since process start */
+    return sceKernelGetProcessTimeLow() / 1000;
+}
 
 static void debug_log(const char *msg) {
     FILE *f = fopen("ux0:/data/chexquest/debug.log", "a");
@@ -134,13 +141,7 @@ static void blit_to_screen(void) {
         for (x = 0; x < VITA_W; x++) {
             int srcx = src_x_fixed >> 16;
             if (srcx >= DOOM_W) srcx = DOOM_W - 1;
-
-            /* DG_ScreenBuffer pixel format: 0xAABBGGRR or 0xAARRGGBB
-             * We need to figure out which one.
-             * Vita wants ABGR: 0xAABBGGRR
-             * Try just copying directly first - if colors look wrong we swap */
             dst_row[x] = src_row[srcx] | 0xFF000000;
-
             src_x_fixed += step_x;
         }
         src_y_fixed += step_y;
@@ -239,13 +240,15 @@ static void do_poll_input(void) {
 /* DG interface */
 void DG_Init(void) {
     debug_log("DG_Init");
+    base_time = get_ms();
+    debug_logf("base_time = %u ms", base_time);
 }
 
 void DG_DrawFrame(void) {
-    if (frame_count < 3) {
+    if (frame_count < 5) {
         uint32_t *src = (uint32_t *)DG_ScreenBuffer;
         if (src) {
-            debug_logf("DG_DrawFrame %d: px=%08X", frame_count, src[0]);
+            debug_logf("DG_DrawFrame %d: px=%08X ms=%u", frame_count, src[0], get_ms() - base_time);
         }
     }
     blit_to_screen();
@@ -253,11 +256,12 @@ void DG_DrawFrame(void) {
     frame_count++;
 }
 
-void DG_SleepMs(uint32_t ms) { sceKernelDelayThread(ms * 1000); }
+void DG_SleepMs(uint32_t ms) {
+    sceKernelDelayThread(ms * 1000);
+}
 
 uint32_t DG_GetTicksMs(void) {
-    SceRtcTick t; sceRtcGetCurrentTick(&t);
-    return (uint32_t)((t.tick - start_tick) / 1000);
+    return get_ms() - base_time;
 }
 
 int DG_GetKey(int *pressed, unsigned char *key) {
@@ -285,8 +289,14 @@ void I_Error(char *error, ...) {
     sceKernelExitProcess(0);
 }
 void I_WaitVBL(int count) { sceKernelDelayThread(count * 14286); }
-int I_GetTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
-void I_Sleep(int ms) { DG_SleepMs(ms); }
+
+int I_GetTime(void) {
+    uint32_t ms = get_ms() - base_time;
+    return (int)(ms * TICRATE / 1000);
+}
+
+void I_Sleep(int ms) { sceKernelDelayThread(ms * 1000); }
+
 byte *I_ZoneBase(int *size) {
     *size = 16 * 1024 * 1024;
     byte *ptr = (byte *)malloc(*size);
@@ -307,16 +317,26 @@ void I_DisplayFPSDots(boolean d) { (void)d; }
 void I_CheckIsScreensaver(void) {}
 void I_GraphicsCheckCommandLine(void) {}
 void I_SetGrabMouseCallback(void (*func)(boolean grab)) { (void)func; }
-int I_GetTime_RealTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
-int I_GetTimeMS(void) { return DG_GetTicksMs(); }
-void I_InitTimer(void) {}
+
+int I_GetTime_RealTime(void) {
+    uint32_t ms = get_ms() - base_time;
+    return (int)(ms * TICRATE / 1000);
+}
+
+int I_GetTimeMS(void) {
+    return (int)(get_ms() - base_time);
+}
+
+void I_InitTimer(void) {
+    base_time = get_ms();
+    debug_logf("I_InitTimer: base=%u", base_time);
+}
 
 void I_InitGraphics(void) {
     debug_log("I_InitGraphics");
     I_VideoBuffer = (byte *)calloc(SCREENWIDTH * SCREENHEIGHT, 1);
     debug_logf("I_VideoBuffer = %p", I_VideoBuffer);
 }
-
 void I_ShutdownGraphics(void) {}
 void I_StartFrame(void) {}
 
@@ -329,6 +349,11 @@ void I_UpdateNoBlit(void) {}
 void I_FinishUpdate(void) {
     if (display_ready && DG_ScreenBuffer) {
         blit_to_screen();
+        if (frame_count < 5) {
+            uint32_t *src = (uint32_t *)DG_ScreenBuffer;
+            debug_logf("I_FinishUpdate %d: px=%08X time=%d", frame_count, src[0], I_GetTime());
+        }
+        frame_count++;
     }
 }
 
@@ -402,6 +427,7 @@ int main(int argc, char **argv) {
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
     debug_log("=== Chex Quest Vita ===");
+    debug_logf("Initial ms = %u", get_ms());
 
     init_display();
     if (!display_ready) {
@@ -410,22 +436,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    base_time = get_ms();
+    debug_logf("base_time = %u", base_time);
+
     debug_log("Display OK");
     show_color(0xFF00FF00);
     sceKernelDelayThread(1000000);
-
-    SceRtcTick t;
-    sceRtcGetCurrentTick(&t);
-    start_tick = t.tick;
 
     const char *wad = NULL;
     const char *paths[] = {
         "ux0:/data/chexquest/chex.wad",
         "ux0:/data/chexquest/doom1.wad",
         "ux0:/data/chexquest/doom.wad",
-        "ux0:/data/chexquest/CHEX.WAD",
-        "ux0:/data/chexquest/DOOM1.WAD",
-        "ux0:/data/chexquest/DOOM.WAD",
         NULL
     };
 
@@ -452,12 +474,24 @@ int main(int argc, char **argv) {
     show_color(0xFFFFFF00);
     sceKernelDelayThread(500000);
 
+    /* Reset base time right before starting engine */
+    base_time = get_ms();
+    debug_logf("Engine start base_time = %u", base_time);
+
     char *nargv[] = { "ChexQuest", "-iwad", (char*)wad, NULL };
     debug_log("doomgeneric_Create...");
     doomgeneric_Create(3, nargv);
-    debug_log("OK - main loop");
+    debug_logf("Create OK, time=%d ms=%u", I_GetTime(), get_ms() - base_time);
 
+    debug_log("Main loop");
+    
+    /* Debug first few ticks */
+    int tick_count = 0;
     while (1) {
+        if (tick_count < 10) {
+            debug_logf("tick %d: I_GetTime=%d ms=%u", tick_count, I_GetTime(), get_ms() - base_time);
+            tick_count++;
+        }
         doomgeneric_Tick();
     }
 
