@@ -19,85 +19,77 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -w -fno-strict-aliasing -DNORMALUNIX -DL
 
 set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
 
-# Instead of glob + filter, list EXACTLY the files we need.
-# This way nothing unexpected ever gets compiled.
-set(DG_SOURCES
-    ${DG_DIR}/am_map.c
-    ${DG_DIR}/d_event.c
-    ${DG_DIR}/d_items.c
-    ${DG_DIR}/d_iwad.c
-    ${DG_DIR}/d_loop.c
-    ${DG_DIR}/d_main.c
-    ${DG_DIR}/d_mode.c
-    ${DG_DIR}/d_net.c
-    ${DG_DIR}/doomdef.c
-    ${DG_DIR}/doomgeneric.c
-    ${DG_DIR}/doomgeneric_vita.c
-    ${DG_DIR}/doomstat.c
-    ${DG_DIR}/dstrings.c
-    ${DG_DIR}/f_finale.c
-    ${DG_DIR}/f_wipe.c
-    ${DG_DIR}/g_game.c
-    ${DG_DIR}/hu_lib.c
-    ${DG_DIR}/hu_stuff.c
-    ${DG_DIR}/i_sound.c
-    ${DG_DIR}/i_system.c
-    ${DG_DIR}/i_timer.c
-    ${DG_DIR}/i_video.c
-    ${DG_DIR}/info.c
-    ${DG_DIR}/m_argv.c
-    ${DG_DIR}/m_bbox.c
-    ${DG_DIR}/m_cheat.c
-    ${DG_DIR}/m_config.c
-    ${DG_DIR}/m_controls.c
-    ${DG_DIR}/m_fixed.c
-    ${DG_DIR}/m_menu.c
-    ${DG_DIR}/m_misc.c
-    ${DG_DIR}/m_random.c
-    ${DG_DIR}/memio.c
-    ${DG_DIR}/mus2mid.c
-    ${DG_DIR}/p_ceilng.c
-    ${DG_DIR}/p_doors.c
-    ${DG_DIR}/p_enemy.c
-    ${DG_DIR}/p_floor.c
-    ${DG_DIR}/p_inter.c
-    ${DG_DIR}/p_lights.c
-    ${DG_DIR}/p_map.c
-    ${DG_DIR}/p_maputl.c
-    ${DG_DIR}/p_mobj.c
-    ${DG_DIR}/p_plats.c
-    ${DG_DIR}/p_pspr.c
-    ${DG_DIR}/p_saveg.c
-    ${DG_DIR}/p_setup.c
-    ${DG_DIR}/p_sight.c
-    ${DG_DIR}/p_spec.c
-    ${DG_DIR}/p_switch.c
-    ${DG_DIR}/p_telept.c
-    ${DG_DIR}/p_tick.c
-    ${DG_DIR}/p_user.c
-    ${DG_DIR}/r_bsp.c
-    ${DG_DIR}/r_data.c
-    ${DG_DIR}/r_draw.c
-    ${DG_DIR}/r_main.c
-    ${DG_DIR}/r_plane.c
-    ${DG_DIR}/r_segs.c
-    ${DG_DIR}/r_sky.c
-    ${DG_DIR}/r_things.c
-    ${DG_DIR}/s_sound.c
-    ${DG_DIR}/sha1.c
-    ${DG_DIR}/sounds.c
-    ${DG_DIR}/st_lib.c
-    ${DG_DIR}/st_stuff.c
-    ${DG_DIR}/statdump.c
-    ${DG_DIR}/tables.c
-    ${DG_DIR}/v_video.c
-    ${DG_DIR}/w_checksum.c
-    ${DG_DIR}/w_file.c
-    ${DG_DIR}/w_file_stdc.c
-    ${DG_DIR}/w_wad.c
-    ${DG_DIR}/wi_stuff.c
-    ${DG_DIR}/z_zone.c
+# First, list everything that exists
+file(GLOB ALL_DG_FILES "${DG_DIR}/*.c")
+message(STATUS "=== ALL .c files in doomgeneric ===")
+foreach(f ${ALL_DG_FILES})
+    get_filename_component(name ${f} NAME)
+    message(STATUS "  ${name}")
+endforeach()
+
+# Grab everything, then remove what we DON'T want
+file(GLOB DG_SOURCES "${DG_DIR}/*.c")
+
+# Remove by filename pattern - anything platform-specific
+set(EXCLUDE_FILES
+    "doomgeneric_allegro.c"
+    "doomgeneric_sdl.c"
+    "doomgeneric_sdl2.c"
+    "doomgeneric_win.c"
+    "doomgeneric_xlib.c"
+    "doomgeneric_soso.c"
+    "doomgeneric_txt.c"
+    "doomgeneric_ascii.c"
+    "doomgeneric_null.c"
+    "i_main.c"
+    "i_allegromusic.c"
+    "i_allegrosound.c"
+    "i_sdlmusic.c"
+    "i_sdlsound.c"
+    "i_oplmusic.c"
+    "i_pcsound.c"
 )
+
+foreach(exc ${EXCLUDE_FILES})
+    set(FULL_PATH "${DG_DIR}/${exc}")
+    if(EXISTS "${FULL_PATH}")
+        list(REMOVE_ITEM DG_SOURCES "${FULL_PATH}")
+        message(STATUS "Excluded: ${exc}")
+    endif()
+endforeach()
+
+# Safety: also remove anything with allegro or sdl in the name
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    string(TOLOWER ${name} name_lower)
+    if(name_lower MATCHES "allegro" OR name_lower MATCHES "sdl" OR name_lower MATCHES "xlib")
+        list(REMOVE_ITEM DG_SOURCES ${src})
+        message(STATUS "Excluded (pattern): ${name}")
+    endif()
+endforeach()
+
+# Also remove any doomgeneric_*.c that isn't our vita or the core
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    if(name MATCHES "^doomgeneric_" AND NOT name STREQUAL "doomgeneric.c" AND NOT name STREQUAL "doomgeneric_vita.c")
+        list(REMOVE_ITEM DG_SOURCES ${src})
+        message(STATUS "Excluded (platform): ${name}")
+    endif()
+endforeach()
+
+# Print final list
+message(STATUS "=== FINAL source list ===")
+list(LENGTH DG_SOURCES num_src)
+message(STATUS "Total: ${num_src} files")
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    message(STATUS "  COMPILE: ${name}")
+endforeach()
+
+# Verify vita file exists
+if(NOT EXISTS "${DG_DIR}/doomgeneric_vita.c")
+    message(FATAL_ERROR "doomgeneric_vita.c NOT FOUND!")
+endif()
 
 add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
