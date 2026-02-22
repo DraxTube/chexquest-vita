@@ -28,25 +28,22 @@ jobs:
           echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
           echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
 
-      - name: Verify VitaSDK
+      - name: Verify VitaSDK tools
         run: |
-          echo "=== Checking VitaSDK ==="
-          which arm-vita-eabi-gcc
-          arm-vita-eabi-gcc --version
-          ls $VITASDK/share/vita.cmake
-          echo "=== Checking stubs ==="
-          ls $VITASDK/arm-vita-eabi/lib/libSceDisplay_stub.a
-          ls $VITASDK/arm-vita-eabi/lib/libSceCtrl_stub.a
-          echo "VitaSDK OK"
+          which arm-vita-eabi-gcc && echo "GCC OK"
+          which vita-elf-create && echo "vita-elf-create OK" || echo "vita-elf-create MISSING"
+          which vita-make-fself && echo "vita-make-fself OK" || echo "vita-make-fself MISSING"
+          which vita-mksfoex && echo "vita-mksfoex OK" || echo "vita-mksfoex MISSING"
+          which vita-pack-vpk && echo "vita-pack-vpk OK" || echo "vita-pack-vpk MISSING"
 
       - name: Clone doomgeneric
-        run: git clone --depth 1 https://github.com/ozkl/doomgeneric.git
+        run: |
+          git clone --depth 1 https://github.com/ozkl/doomgeneric.git
+          echo "=== doomgeneric .c files ==="
+          ls doomgeneric/doomgeneric/*.c
 
       - name: Copy Vita platform file
-        run: |
-          cp vita/doomgeneric_vita.c doomgeneric/doomgeneric/
-          echo "=== Files in doomgeneric/doomgeneric/ matching doomgeneric_* ==="
-          ls doomgeneric/doomgeneric/doomgeneric_*.c
+        run: cp vita/doomgeneric_vita.c doomgeneric/doomgeneric/
 
       - name: Generate assets
         run: python3 scripts/gen_assets.py
@@ -56,13 +53,27 @@ jobs:
           mkdir -p build && cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
                 -DCMAKE_BUILD_TYPE=Release .. 2>&1 | tee cmake.log
+          echo ""
+          echo "=== CMAKE EXIT CODE: $? ==="
 
       - name: Build
         run: |
           cd build
-          make -j$(nproc) VERBOSE=1 2>&1 | tee build.log
-          echo "=== Output files ==="
-          find . -name "*.vpk" -o -name "*.self" -o -name "*.velf" 2>/dev/null
+          make -j$(nproc) 2>&1 | tee build.log
+          BUILD_EXIT=$?
+          echo ""
+          echo "=== MAKE EXIT CODE: $BUILD_EXIT ==="
+          echo ""
+          echo "=== All files in build/ ==="
+          ls -la
+          echo ""
+          echo "=== Looking for output files ==="
+          find . -name "*.vpk" -o -name "*.self" -o -name "*.velf" -o -name "*.elf" | head -20
+          echo ""
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "BUILD FAILED"
+            exit 1
+          fi
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
