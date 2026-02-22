@@ -1,4 +1,4 @@
-name: Build Chex Quest Vita
+name: Build Chex Quest PS Vita
 
 on:
   push:
@@ -7,40 +7,57 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  VITASDK: /usr/local/vitasdk
+
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container:
-      image: vitasdk/vitasdk:latest
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup VitaSDK
         run: |
-          apt-get update
-          apt-get install -y cmake make git
+          git clone https://github.com/vitasdk/vdpm.git
+          cd vdpm
+          export VITASDK=/usr/local/vitasdk
+          export PATH=$VITASDK/bin:$PATH
+          ./bootstrap-vitasdk.sh
+          ./install_all.sh
+          echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
+          echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
+
+      - name: Install Vita packages
+        run: |
           vdpm SDL2
           vdpm SDL2_mixer
-          vdpm SDL2_image
+          vdpm SDL2_net
+          vdpm libpng
           vdpm zlib
 
-      - name: Configure
+      - name: Clone Chocolate Doom
         run: |
-          mkdir build
-          cd build
-          cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release ..
+          git clone https://github.com/chocolate-doom/chocolate-doom.git
+          cd chocolate-doom
+          git checkout chocolate-doom-3.0.1
+
+      - name: Apply Vita patches
+        run: |
+          chmod +x vita/patch_chex.sh
+          ./vita/patch_chex.sh
 
       - name: Build
         run: |
-          cd build
+          mkdir build && cd build
+          cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
+                -DCMAKE_BUILD_TYPE=Release \
+                ..
           make -j$(nproc)
 
-      - name: Upload VPK
+      - name: Upload VPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChexQuest-Vita
+          name: ChexQuest-Vita-VPK
           path: build/*.vpk
-          if-no-files-found: error
