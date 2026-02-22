@@ -164,4 +164,195 @@ void DG_Init(void) {
     sceAppUtilInit(&ip, &bp);
 
     sceIoMkdir("ux0:/data/", 0777);
-    sceIoMkdir("ux0:/data/chexquest/", 
+    sceIoMkdir("ux0:/data/chexquest/", 0777);
+
+    init_display();
+
+    SceRtcTick t; sceRtcGetCurrentTick(&t); start_tick = t.tick;
+}
+
+void DG_DrawFrame(void) {
+    uint32_t *fb = vita_fb[vita_fb_idx];
+    uint32_t *src = (uint32_t *)DG_ScreenBuffer;
+    int x, y;
+    float sx = (float)DOOM_W / (float)VITA_W;
+    float sy = (float)DOOM_H / (float)VITA_H;
+
+    for (y = 0; y < VITA_H; y++) {
+        int srcy = (int)(y * sy);
+        if (srcy >= DOOM_H) srcy = DOOM_H - 1;
+        uint32_t *dst_row = fb + y * VITA_STRIDE;
+        uint32_t *src_row = src + srcy * DOOM_W;
+        for (x = 0; x < VITA_W; x++) {
+            int srcx = (int)(x * sx);
+            if (srcx >= DOOM_W) srcx = DOOM_W - 1;
+            uint32_t p = src_row[srcx];
+            uint8_t r = (p >> 16) & 0xFF;
+            uint8_t g = (p >> 8) & 0xFF;
+            uint8_t b = p & 0xFF;
+            dst_row[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
+        }
+    }
+
+    SceDisplayFrameBuf dfb = {0};
+    dfb.size = sizeof(dfb);
+    dfb.base = fb;
+    dfb.pitch = VITA_STRIDE;
+    dfb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+    dfb.width = VITA_W;
+    dfb.height = VITA_H;
+    sceDisplaySetFrameBuf(&dfb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+    sceDisplayWaitVblankStart();
+    vita_fb_idx ^= 1;
+
+    poll_input();
+}
+
+void DG_SleepMs(uint32_t ms) {
+    sceKernelDelayThread(ms * 1000);
+}
+
+uint32_t DG_GetTicksMs(void) {
+    SceRtcTick t; sceRtcGetCurrentTick(&t);
+    return (uint32_t)((t.tick - start_tick) / 1000);
+}
+
+int DG_GetKey(int *pressed, unsigned char *key) {
+    if (kq_r == kq_w) return 0;
+    *pressed = kq[kq_r].pressed;
+    *key = kq[kq_r].key;
+    kq_r = (kq_r + 1) % KQUEUE_SZ;
+    return 1;
+}
+
+void DG_SetWindowTitle(const char *t) { (void)t; }
+
+/* ============================================================
+ * STUBS for removed i_*.c files
+ * doomgeneric's engine calls these - we provide no-ops
+ * ============================================================ */
+
+/* i_system.c stubs */
+void I_Init(void) {}
+void I_Quit(void) { sceKernelExitProcess(0); }
+void I_Error(char *error, ...) {
+    /* Write to log file for debugging */
+    va_list args;
+    FILE *f = fopen("ux0:/data/chexquest/error.log", "a");
+    if (f) {
+        va_start(args, error);
+        vfprintf(f, error, args);
+        fprintf(f, "\n");
+        va_end(args);
+        fclose(f);
+    }
+    sceKernelDelayThread(3000000);
+    sceKernelExitProcess(0);
+}
+void I_WaitVBL(int count) { sceKernelDelayThread(count * 14286); }
+int I_GetTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
+void I_Sleep(int ms) { DG_SleepMs(ms); }
+byte *I_ZoneBase(int *size) {
+    *size = 16 * 1024 * 1024;
+    return (byte *)malloc(*size);
+}
+
+/* i_timer.c stubs */
+int I_GetTime_RealTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
+int I_GetTimeMS(void) { return DG_GetTicksMs(); }
+void I_InitTimer(void) {}
+
+/* i_video.c stubs - doomgeneric handles this but engine may call these */
+void I_InitGraphics(void) {}
+void I_ShutdownGraphics(void) {}
+void I_StartFrame(void) {}
+void I_StartTic(void) {}
+void I_UpdateNoBlit(void) {}
+void I_FinishUpdate(void) {}
+void I_ReadScreen(byte *scr) {
+    memcpy(scr, DG_ScreenBuffer, DOOM_W * DOOM_H * 4);
+}
+void I_SetPalette(byte *palette) { (void)palette; }
+void I_EnableLoadingDisk(void) {}
+void I_BeginRead(void) {}
+void I_EndRead(void) {}
+void I_SetWindowTitle(char *title) { (void)title; }
+
+/* i_input.c stubs */
+void I_InitInput(void) {}
+void I_ShutdownInput(void) {}
+
+/* i_joystick.c stubs */
+void I_InitJoystick(void) {}
+void I_ShutdownJoystick(void) {}
+void I_UpdateJoystick(void) {}
+
+/* i_sound.c stubs - no sound for now */
+int I_GetSfxLumpNum(void *sfxinfo) { (void)sfxinfo; return 0; }
+void I_SetChannels(void) {}
+void I_SetSfxVolume(int volume) { (void)volume; }
+void I_SetMusicVolume(int volume) { (void)volume; }
+int I_StartSound(void *sfxinfo, int channel, int vol, int sep, int pitch) {
+    (void)sfxinfo; (void)channel; (void)vol; (void)sep; (void)pitch; return 0;
+}
+void I_StopSound(int channel) { (void)channel; }
+int I_SoundIsPlaying(int channel) { (void)channel; return 0; }
+void I_UpdateSound(void) {}
+void I_UpdateSoundParams(int channel, int vol, int sep) {
+    (void)channel; (void)vol; (void)sep;
+}
+void I_ShutdownSound(void) {}
+void I_InitSound(int use_sfx_prefix) { (void)use_sfx_prefix; }
+void I_ShutdownMusic(void) {}
+void I_InitMusic(void) {}
+void I_PlaySong(void *handle, int looping) { (void)handle; (void)looping; }
+void I_PauseSong(void) {}
+void I_ResumeSong(void) {}
+void I_StopSong(void) {}
+void I_UnRegisterSong(void *handle) { (void)handle; }
+void *I_RegisterSong(void *data, int len) { (void)data; (void)len; return NULL; }
+
+/* i_cdmus.c stubs */
+int I_CDMusInit(void) { return 0; }
+void I_CDMusShutdown(void) {}
+void I_CDMusUpdate(void) {}
+void I_CDMusStop(void) {}
+int I_CDMusPlay(int track) { (void)track; return 0; }
+void I_CDMusSetVolume(int vol) { (void)vol; }
+int I_CDMusFirstTrack(void) { return 0; }
+int I_CDMusLastTrack(void) { return 0; }
+int I_CDMusTrackLength(int track) { (void)track; return 0; }
+
+/* i_endoom.c stubs */
+void I_Endoom(byte *data) { (void)data; }
+
+/* i_scale.c stubs */
+void I_InitScale(void) {}
+
+/* icon.c stubs */
+
+/* gusconf.c stubs */
+char *gus_patch_path = "";
+int gus_ram_kb = 0;
+
+/* ============================================================
+ * MAIN
+ * ============================================================ */
+int main(int argc, char **argv) {
+    const char *wad = "ux0:/data/chexquest/chex.wad";
+    SceUID fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
+    if (fd < 0) {
+        wad = "ux0:/data/chexquest/doom1.wad";
+        fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
+        if (fd < 0) {
+            wad = "ux0:/data/chexquest/doom.wad";
+            fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
+        }
+    }
+    if (fd >= 0) sceIoClose(fd);
+
+    char *nargv[] = { "ChexQuest", "-iwad", (char*)wad, NULL };
+    doomgeneric_Create(3, nargv);
+    while (1) doomgeneric_Tick();
+    return 0;
+}
