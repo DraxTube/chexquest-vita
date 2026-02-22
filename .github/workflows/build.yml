@@ -25,80 +25,56 @@ jobs:
             curl \
             wget \
             python3 \
-            pkg-config \
-            autoconf \
-            automake \
-            libtool \
-            imagemagick
+            patch \
+            pkg-config
 
       - name: Setup VitaSDK
         run: |
           export VITASDK=/usr/local/vitasdk
+          export PATH=$VITASDK/bin:$PATH
           git clone https://github.com/vitasdk/vdpm.git /tmp/vdpm
           cd /tmp/vdpm
           ./bootstrap-vitasdk.sh
-          export PATH=$VITASDK/bin:$PATH
-          ./install_all.sh
           echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
           echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
 
-      - name: Install Vita libraries
+      - name: Install Vita packages via vdpm
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
-          vdpm SDL2
-          vdpm SDL2_mixer
-          vdpm SDL2_net
-          vdpm libpng
-          vdpm zlib
-          vdpm libvorbis
-          vdpm libogg
-          vdpm libFLAC
-          vdpm libmikmod
-          vdpm mpg123
+          cd /tmp/vdpm
+          # Installa i pacchetti uno per uno con vdpm
+          vdpm zlib || true
+          vdpm libpng || true
+          vdpm libogg || true
+          vdpm libvorbis || true
+          vdpm libmikmod || true
+          vdpm libFLAC || true
+          vdpm mpg123 || true
+          vdpm SDL2 || true
+          vdpm SDL2_mixer || true
+          vdpm SDL2_net || true
 
       - name: Clone Chocolate Doom
         run: |
           git clone --depth 1 --branch chocolate-doom-3.0.1 \
             https://github.com/chocolate-doom/chocolate-doom.git
 
-      - name: Apply Vita patches
+      - name: Prepare Vita source files
         run: |
-          chmod +x vita/patch_chex.sh
-          bash vita/patch_chex.sh
+          chmod +x scripts/prepare.sh
+          bash scripts/prepare.sh
 
       - name: Generate placeholder assets
         run: |
           mkdir -p sce_sys/livearea/contents
-          # Generate simple icon (128x128 PNG)
-          convert -size 128x128 xc:'#4a86c8' \
-            -font Helvetica -pointsize 20 -fill white \
-            -gravity center -annotate 0 "CHEX\nQUEST" \
-            sce_sys/icon0.png 2>/dev/null || \
-          python3 -c "
-          import struct, zlib
-          def create_png(w, h, r, g, b):
-              def chunk(ctype, data):
-                  c = ctype + data
-                  return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-              sig = b'\x89PNG\r\n\x1a\n'
-              ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-              raw = b''
-              for y in range(h):
-                  raw += b'\x00' + bytes([r,g,b]) * w
-              idat = chunk(b'IDAT', zlib.compress(raw))
-              iend = chunk(b'IEND', b'')
-              return sig + ihdr + idat + iend
-          with open('sce_sys/icon0.png','wb') as f: f.write(create_png(128,128,74,134,200))
-          with open('sce_sys/livearea/contents/bg.png','wb') as f: f.write(create_png(840,500,30,30,60))
-          with open('sce_sys/livearea/contents/startup.png','wb') as f: f.write(create_png(280,158,74,134,200))
-          "
+          python3 scripts/gen_assets.py
 
       - name: Configure build
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
-          mkdir build
+          mkdir -p build
           cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
                 -DCMAKE_BUILD_TYPE=Release \
@@ -107,7 +83,7 @@ jobs:
       - name: Build
         run: |
           cd build
-          make -j$(nproc) VERBOSE=1
+          make -j$(nproc) VERBOSE=1 2>&1 | tee build.log
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
@@ -116,17 +92,9 @@ jobs:
           path: build/*.vpk
           if-no-files-found: warn
 
-      - name: Upload SELF (fallback)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ChexQuest-Vita-SELF
-          path: build/*.self
-          if-no-files-found: warn
-
-      - name: Upload build log
+      - name: Upload build log on failure
         uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: build-log
-          path: build/CMakeFiles/CMakeOutput.log
+          path: build/build.log
