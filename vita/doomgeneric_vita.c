@@ -20,6 +20,8 @@
 #include <stdarg.h>
 
 #define TICRATE 35
+#define SCREENWIDTH 320
+#define SCREENHEIGHT 200
 
 #define VITA_W       960
 #define VITA_H       544
@@ -27,6 +29,22 @@
 #define DOOM_W       DOOMGENERIC_RESX
 #define DOOM_H       DOOMGENERIC_RESY
 
+/* ============================================================
+ * MISSING GLOBAL VARIABLES that the engine expects
+ * ============================================================ */
+byte *I_VideoBuffer = NULL;
+int screenvisible = 1;
+int screensaver_mode = 0;
+int vanilla_keyboard_mapping = 0;
+int usegamma = 0;
+int usemouse = 0;
+int snd_musicdevice = 0;
+int mouse_acceleration = 0;
+int mouse_threshold = 0;
+
+/* ============================================================
+ * DISPLAY
+ * ============================================================ */
 static uint32_t *vita_fb[2] = { NULL, NULL };
 static int vita_fb_idx = 0;
 static SceUID vita_fb_uid[2];
@@ -51,6 +69,9 @@ static void init_display(void) {
     memset(vita_fb[0], 0, sz);
     memset(vita_fb[1], 0, sz);
 
+    /* Allocate I_VideoBuffer for the engine */
+    I_VideoBuffer = (byte *)calloc(SCREENWIDTH * SCREENHEIGHT, 1);
+
     SceDisplayFrameBuf fb = {0};
     fb.size = sizeof(fb);
     fb.base = vita_fb[0];
@@ -61,6 +82,9 @@ static void init_display(void) {
     sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
 }
 
+/* ============================================================
+ * INPUT
+ * ============================================================ */
 #define KQUEUE_SZ 64
 #define DEADZONE  35
 
@@ -138,6 +162,10 @@ static void poll_input(void) {
     pad_prev = pad;
 }
 
+/* ============================================================
+ * DOOMGENERIC INTERFACE
+ * ============================================================ */
+
 void DG_Init(void) {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -210,8 +238,11 @@ int DG_GetKey(int *pressed, unsigned char *key) {
 
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
-/* === STUBS for removed i_*.c files === */
+/* ============================================================
+ * ALL STUBS for removed i_*.c files
+ * ============================================================ */
 
+/* i_system.c */
 void I_Init(void) {}
 void I_Quit(void) { sceKernelExitProcess(0); }
 void I_Error(char *error, ...) {
@@ -234,31 +265,57 @@ byte *I_ZoneBase(int *size) {
     *size = 16 * 1024 * 1024;
     return (byte *)malloc(*size);
 }
+void I_Tactile(int on, int off, int total) { (void)on; (void)off; (void)total; }
+int I_ConsoleStdout(void) { return 0; }
+boolean I_GetMemoryValue(unsigned int offset, void *value, int size) {
+    (void)offset; (void)value; (void)size; return 0;
+}
+void I_AtExit(void (*func)(void), boolean run_on_error) { (void)func; (void)run_on_error; }
+void I_PrintBanner(const char *msg) { (void)msg; }
+void I_PrintDivider(void) {}
+void I_PrintStartupBanner(const char *gamedescription) { (void)gamedescription; }
+void I_DisplayFPSDots(boolean dots_on) { (void)dots_on; }
+void I_CheckIsScreensaver(void) {}
+void I_GraphicsCheckCommandLine(void) {}
+void I_SetGrabMouseCallback(void (*func)(boolean grab)) { (void)func; }
 
+/* i_timer.c */
 int I_GetTime_RealTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
 int I_GetTimeMS(void) { return DG_GetTicksMs(); }
 void I_InitTimer(void) {}
 
+/* i_video.c */
 void I_InitGraphics(void) {}
 void I_ShutdownGraphics(void) {}
 void I_StartFrame(void) {}
 void I_StartTic(void) {}
 void I_UpdateNoBlit(void) {}
 void I_FinishUpdate(void) {}
-void I_ReadScreen(byte *scr) { memcpy(scr, DG_ScreenBuffer, DOOM_W * DOOM_H * 4); }
+void I_ReadScreen(byte *scr) {
+    if (I_VideoBuffer) memcpy(scr, I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT);
+}
 void I_SetPalette(byte *palette) { (void)palette; }
 void I_EnableLoadingDisk(void) {}
 void I_BeginRead(void) {}
 void I_EndRead(void) {}
 void I_SetWindowTitle(char *title) { (void)title; }
+void I_BindVideoVariables(void) {}
+int I_GetPaletteIndex(int r, int g, int b) {
+    (void)r; (void)g; (void)b; return 0;
+}
+void I_PrecacheSounds(void *sounds, int num_sounds) { (void)sounds; (void)num_sounds; }
 
+/* i_input.c */
 void I_InitInput(void) {}
 void I_ShutdownInput(void) {}
 
+/* i_joystick.c */
 void I_InitJoystick(void) {}
 void I_ShutdownJoystick(void) {}
 void I_UpdateJoystick(void) {}
+void I_BindJoystickVariables(void) {}
 
+/* i_sound.c */
 int I_GetSfxLumpNum(void *sfxinfo) { (void)sfxinfo; return 0; }
 void I_SetChannels(void) {}
 void I_SetSfxVolume(int volume) { (void)volume; }
@@ -282,7 +339,10 @@ void I_ResumeSong(void) {}
 void I_StopSong(void) {}
 void I_UnRegisterSong(void *handle) { (void)handle; }
 void *I_RegisterSong(void *data, int len) { (void)data; (void)len; return NULL; }
+int I_MusicIsPlaying(void) { return 0; }
+void I_BindSoundVariables(void) {}
 
+/* i_cdmus.c */
 int I_CDMusInit(void) { return 0; }
 void I_CDMusShutdown(void) {}
 void I_CDMusUpdate(void) {}
@@ -293,12 +353,19 @@ int I_CDMusFirstTrack(void) { return 0; }
 int I_CDMusLastTrack(void) { return 0; }
 int I_CDMusTrackLength(int track) { (void)track; return 0; }
 
+/* i_endoom.c */
 void I_Endoom(byte *data) { (void)data; }
+
+/* i_scale.c */
 void I_InitScale(void) {}
 
+/* gusconf.c */
 char *gus_patch_path = "";
 int gus_ram_kb = 0;
 
+/* ============================================================
+ * MAIN
+ * ============================================================ */
 int main(int argc, char **argv) {
     const char *wad = "ux0:/data/chexquest/chex.wad";
     SceUID fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
