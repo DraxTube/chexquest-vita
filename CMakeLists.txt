@@ -15,31 +15,40 @@ set(VITA_APP_NAME "Chex Quest")
 set(VITA_TITLEID  "CHEX00001")
 set(VITA_VERSION  "01.00")
 
-# Suppress warnings from original Doom source (it's old C)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -w -fno-strict-aliasing -DNORMALUNIX -DLINUX -DVITA")
 
-# doomgeneric source directory
 set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
 
-# Collect ALL doomgeneric C files
+# Collect all C files
 file(GLOB DG_SOURCES "${DG_DIR}/*.c")
 
-# Remove other platform implementations (we only want our vita one)
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_sdl\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_win\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_xlib\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_sdl2\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_soso\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_txt\\.c$")
-list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_ascii\\.c$")
+# Remove ALL other platform files - keep ONLY our vita one
+# This is the fix: use a whitelist approach instead of blacklist
+set(PLATFORM_FILES_TO_REMOVE)
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    if(name MATCHES "^doomgeneric_.*\\.c$" AND NOT name STREQUAL "doomgeneric_vita.c" AND NOT name STREQUAL "doomgeneric.c")
+        list(APPEND PLATFORM_FILES_TO_REMOVE ${src})
+    endif()
+endforeach()
 
-# Verify our vita file is there
-if(NOT EXISTS "${DG_DIR}/doomgeneric_vita.c")
-    message(FATAL_ERROR "doomgeneric_vita.c not found in ${DG_DIR}!")
-endif()
+foreach(src ${PLATFORM_FILES_TO_REMOVE})
+    list(REMOVE_ITEM DG_SOURCES ${src})
+    get_filename_component(name ${src} NAME)
+    message(STATUS "Excluded: ${name}")
+endforeach()
 
-# Print what we're compiling
-message(STATUS "=== Source files ===")
+# Also remove i_main.c if it has its own main()
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    if(name STREQUAL "i_main.c")
+        list(REMOVE_ITEM DG_SOURCES ${src})
+        message(STATUS "Excluded: ${name}")
+    endif()
+endforeach()
+
+# Print what we ARE compiling
+message(STATUS "=== Compiling ===")
 foreach(src ${DG_SOURCES})
     get_filename_component(name ${src} NAME)
     message(STATUS "  ${name}")
@@ -58,7 +67,6 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 )
 
 target_link_libraries(${PROJECT_NAME}
-    SDL2
     vita2d
     SceDisplay_stub
     SceCtrl_stub
