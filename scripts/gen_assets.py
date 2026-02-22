@@ -15,14 +15,10 @@ def create_png(w, h, r, g, b):
     return sig + ihdr + idat + iend
 
 os.makedirs('sce_sys/livearea/contents', exist_ok=True)
-
 with open('sce_sys/icon0.png', 'wb') as f:
     f.write(create_png(128, 128, 74, 134, 200))
-
 with open('sce_sys/livearea/contents/bg.png', 'wb') as f:
     f.write(create_png(840, 500, 30, 30, 60))
-
 with open('sce_sys/livearea/contents/startup.png', 'wb') as f:
     f.write(create_png(280, 158, 74, 134, 200))
-
 print("Assets generated OK")
