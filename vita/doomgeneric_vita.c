@@ -29,9 +29,7 @@
 #define DOOM_W       DOOMGENERIC_RESX
 #define DOOM_H       DOOMGENERIC_RESY
 
-/* ============================================================
- * MISSING GLOBAL VARIABLES that the engine expects
- * ============================================================ */
+/* Global variables the engine expects */
 byte *I_VideoBuffer = NULL;
 int screenvisible = 1;
 int screensaver_mode = 0;
@@ -42,9 +40,7 @@ int snd_musicdevice = 0;
 int mouse_acceleration = 0;
 int mouse_threshold = 0;
 
-/* ============================================================
- * DISPLAY
- * ============================================================ */
+/* Display */
 static uint32_t *vita_fb[2] = { NULL, NULL };
 static int vita_fb_idx = 0;
 static SceUID vita_fb_uid[2];
@@ -58,6 +54,36 @@ static void *alloc_cdram(unsigned int size, SceUID *uid) {
     return mem;
 }
 
+/* Draw a solid color to screen - for testing */
+static void fill_screen(uint32_t color) {
+    uint32_t *fb = vita_fb[vita_fb_idx];
+    int x, y;
+    for (y = 0; y < VITA_H; y++) {
+        for (x = 0; x < VITA_W; x++) {
+            fb[y * VITA_STRIDE + x] = color;
+        }
+    }
+    SceDisplayFrameBuf dfb = {0};
+    dfb.size = sizeof(dfb);
+    dfb.base = fb;
+    dfb.pitch = VITA_STRIDE;
+    dfb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+    dfb.width = VITA_W;
+    dfb.height = VITA_H;
+    sceDisplaySetFrameBuf(&dfb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+    sceDisplayWaitVblankStart();
+    vita_fb_idx ^= 1;
+}
+
+/* Write debug message to file AND show color on screen */
+static void debug_log(const char *msg) {
+    FILE *f = fopen("ux0:/data/chexquest/debug.log", "a");
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fclose(f);
+    }
+}
+
 static void init_display(void) {
     unsigned int sz = VITA_STRIDE * VITA_H * 4;
     vita_fb[0] = (uint32_t *)alloc_cdram(sz, &vita_fb_uid[0]);
@@ -69,7 +95,6 @@ static void init_display(void) {
     memset(vita_fb[0], 0, sz);
     memset(vita_fb[1], 0, sz);
 
-    /* Allocate I_VideoBuffer for the engine */
     I_VideoBuffer = (byte *)calloc(SCREENWIDTH * SCREENHEIGHT, 1);
 
     SceDisplayFrameBuf fb = {0};
@@ -82,9 +107,7 @@ static void init_display(void) {
     sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
 }
 
-/* ============================================================
- * INPUT
- * ============================================================ */
+/* Input */
 #define KQUEUE_SZ 64
 #define DEADZONE  35
 
@@ -162,10 +185,7 @@ static void poll_input(void) {
     pad_prev = pad;
 }
 
-/* ============================================================
- * DOOMGENERIC INTERFACE
- * ============================================================ */
-
+/* DoomGeneric interface */
 void DG_Init(void) {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -180,6 +200,12 @@ void DG_Init(void) {
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     init_display();
+
+    /* Show blue screen to confirm display works */
+    debug_log("=== Chex Quest Vita starting ===");
+    debug_log("Display initialized");
+    fill_screen(0xFF800000);  /* blue in ABGR */
+    sceKernelDelayThread(500000);  /* show for 0.5s */
 
     SceRtcTick t; sceRtcGetCurrentTick(&t); start_tick = t.tick;
 }
@@ -238,24 +264,20 @@ int DG_GetKey(int *pressed, unsigned char *key) {
 
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
-/* ============================================================
- * ALL STUBS for removed i_*.c files
- * ============================================================ */
-
-/* i_system.c */
+/* Stubs */
 void I_Init(void) {}
 void I_Quit(void) { sceKernelExitProcess(0); }
 void I_Error(char *error, ...) {
+    char buf[512];
     va_list args;
-    FILE *f = fopen("ux0:/data/chexquest/error.log", "a");
-    if (f) {
-        va_start(args, error);
-        vfprintf(f, error, args);
-        fprintf(f, "\n");
-        va_end(args);
-        fclose(f);
-    }
-    sceKernelDelayThread(3000000);
+    va_start(args, error);
+    vsnprintf(buf, sizeof(buf), error, args);
+    va_end(args);
+    debug_log(buf);
+    
+    /* Show red screen on error */
+    fill_screen(0xFF0000FF);  /* red in ABGR */
+    sceKernelDelayThread(5000000);
     sceKernelExitProcess(0);
 }
 void I_WaitVBL(int count) { sceKernelDelayThread(count * 14286); }
@@ -279,13 +301,11 @@ void I_CheckIsScreensaver(void) {}
 void I_GraphicsCheckCommandLine(void) {}
 void I_SetGrabMouseCallback(void (*func)(boolean grab)) { (void)func; }
 
-/* i_timer.c */
 int I_GetTime_RealTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
 int I_GetTimeMS(void) { return DG_GetTicksMs(); }
 void I_InitTimer(void) {}
 
-/* i_video.c */
-void I_InitGraphics(void) {}
+void I_InitGraphics(void) { debug_log("I_InitGraphics called"); }
 void I_ShutdownGraphics(void) {}
 void I_StartFrame(void) {}
 void I_StartTic(void) {}
@@ -300,22 +320,17 @@ void I_BeginRead(void) {}
 void I_EndRead(void) {}
 void I_SetWindowTitle(char *title) { (void)title; }
 void I_BindVideoVariables(void) {}
-int I_GetPaletteIndex(int r, int g, int b) {
-    (void)r; (void)g; (void)b; return 0;
-}
+int I_GetPaletteIndex(int r, int g, int b) { (void)r; (void)g; (void)b; return 0; }
 void I_PrecacheSounds(void *sounds, int num_sounds) { (void)sounds; (void)num_sounds; }
 
-/* i_input.c */
 void I_InitInput(void) {}
 void I_ShutdownInput(void) {}
 
-/* i_joystick.c */
 void I_InitJoystick(void) {}
 void I_ShutdownJoystick(void) {}
 void I_UpdateJoystick(void) {}
 void I_BindJoystickVariables(void) {}
 
-/* i_sound.c */
 int I_GetSfxLumpNum(void *sfxinfo) { (void)sfxinfo; return 0; }
 void I_SetChannels(void) {}
 void I_SetSfxVolume(int volume) { (void)volume; }
@@ -342,7 +357,6 @@ void *I_RegisterSong(void *data, int len) { (void)data; (void)len; return NULL; 
 int I_MusicIsPlaying(void) { return 0; }
 void I_BindSoundVariables(void) {}
 
-/* i_cdmus.c */
 int I_CDMusInit(void) { return 0; }
 void I_CDMusShutdown(void) {}
 void I_CDMusUpdate(void) {}
@@ -353,34 +367,77 @@ int I_CDMusFirstTrack(void) { return 0; }
 int I_CDMusLastTrack(void) { return 0; }
 int I_CDMusTrackLength(int track) { (void)track; return 0; }
 
-/* i_endoom.c */
 void I_Endoom(byte *data) { (void)data; }
-
-/* i_scale.c */
 void I_InitScale(void) {}
 
-/* gusconf.c */
 char *gus_patch_path = "";
 int gus_ram_kb = 0;
 
-/* ============================================================
- * MAIN
- * ============================================================ */
+/* Main */
 int main(int argc, char **argv) {
-    const char *wad = "ux0:/data/chexquest/chex.wad";
-    SceUID fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
-    if (fd < 0) {
-        wad = "ux0:/data/chexquest/doom1.wad";
-        fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
-        if (fd < 0) {
-            wad = "ux0:/data/chexquest/doom.wad";
-            fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
+    /* Init display early so we can show debug colors */
+    scePowerSetArmClockFrequency(444);
+    
+    SceAppUtilInitParam ip; SceAppUtilBootParam bp;
+    memset(&ip, 0, sizeof(ip)); memset(&bp, 0, sizeof(bp));
+    sceAppUtilInit(&ip, &bp);
+    
+    sceIoMkdir("ux0:/data/", 0777);
+    sceIoMkdir("ux0:/data/chexquest/", 0777);
+    
+    init_display();
+    
+    /* GREEN = main() reached */
+    debug_log("=== main() started ===");
+    fill_screen(0xFF00FF00);  /* green ABGR */
+    sceKernelDelayThread(1000000);  /* 1 second */
+
+    /* Find WAD */
+    const char *wad = NULL;
+    const char *try_paths[] = {
+        "ux0:/data/chexquest/chex.wad",
+        "ux0:/data/chexquest/doom1.wad",
+        "ux0:/data/chexquest/doom.wad",
+        "ux0:/data/chexquest/CHEX.WAD",
+        "ux0:/data/chexquest/DOOM1.WAD",
+        "ux0:/data/chexquest/DOOM.WAD",
+        NULL
+    };
+    
+    int i;
+    for (i = 0; try_paths[i]; i++) {
+        SceUID fd = sceIoOpen(try_paths[i], SCE_O_RDONLY, 0);
+        if (fd >= 0) {
+            sceIoClose(fd);
+            wad = try_paths[i];
+            debug_log("Found WAD:");
+            debug_log(wad);
+            break;
         }
     }
-    if (fd >= 0) sceIoClose(fd);
+    
+    if (!wad) {
+        /* YELLOW = no WAD found */
+        debug_log("ERROR: No WAD file found!");
+        fill_screen(0xFF00FFFF);  /* yellow ABGR */
+        sceKernelDelayThread(10000000);  /* 10 seconds so user sees it */
+        sceKernelExitProcess(0);
+        return 1;
+    }
+    
+    /* CYAN = WAD found, starting engine */
+    debug_log("Starting Doom engine...");
+    fill_screen(0xFFFFFF00);  /* cyan ABGR */
+    sceKernelDelayThread(1000000);
 
     char *nargv[] = { "ChexQuest", "-iwad", (char*)wad, NULL };
     doomgeneric_Create(3, nargv);
-    while (1) doomgeneric_Tick();
+    
+    debug_log("Engine initialized, entering main loop");
+    
+    while (1) {
+        doomgeneric_Tick();
+    }
+
     return 0;
 }
