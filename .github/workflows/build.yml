@@ -37,27 +37,36 @@ jobs:
           cd /tmp/vdpm
           vdpm zlib || true
           vdpm libpng || true
-          vdpm libogg || true
-          vdpm libvorbis || true
           vdpm SDL2 || true
           vdpm SDL2_mixer || true
 
+      - name: Clone doomgeneric
+        run: |
+          git clone --depth 1 https://github.com/ozkl/doomgeneric.git
+
       - name: Generate assets
         run: python3 scripts/gen_assets.py
+
+      - name: Copy Vita platform implementation
+        run: |
+          cp vita/doomgeneric_vita.c doomgeneric/doomgeneric/
+          echo "Files in doomgeneric/doomgeneric/:"
+          ls doomgeneric/doomgeneric/*.c | head -20
 
       - name: Configure
         run: |
           mkdir -p build && cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release ..
+                -DCMAKE_BUILD_TYPE=Release \
+                ..
 
       - name: Build
         run: |
           cd build
           make -j$(nproc) VERBOSE=1 2>&1 | tee build.log
-          echo "=== Build directory contents ==="
-          ls -la
-          ls -la *.vpk *.self 2>/dev/null || echo "No output files found"
+          echo "=== Output files ==="
+          find . -name "*.vpk" -o -name "*.self" -o -name "*.velf" 2>/dev/null
+          ls -la *.vpk 2>/dev/null || echo "No VPK yet"
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
