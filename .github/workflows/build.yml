@@ -1,10 +1,10 @@
-name: Build Chex Quest PS Vita
+name: Build Chex Quest Vita
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -14,76 +14,33 @@ jobs:
       image: vitasdk/vitasdk:latest
 
     steps:
-      # ── Strumenti di build ──────────────────────────────────
-      - name: Install system tools
-        run: |
-          apk add --no-cache \
-            git cmake make bash python3 pkgconf
-
-      # ── Checkout del repository ─────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Installa librerie Vita mancanti (safety net) ────────
-      - name: Install Vita libraries
+      - name: Install dependencies
         run: |
-          vdpm libvita2d || true
-          vdpm libpng    || true
-          vdpm zlib      || true
-          vdpm libjpeg-turbo || true
+          apt-get update
+          apt-get install -y cmake make git
+          vdpm SDL2
+          vdpm SDL2_mixer
+          vdpm SDL2_image
+          vdpm zlib
 
-      # ── Clona doomgeneric ───────────────────────────────────
-      - name: Clone doomgeneric engine
+      - name: Configure
         run: |
-          git clone --depth 1 \
-            https://github.com/ozkl/doomgeneric.git
+          mkdir build
+          cd build
+          cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
+                -DCMAKE_BUILD_TYPE=Release ..
 
-      # ── Applica patch per Vita ──────────────────────────────
-      - name: Apply Vita compatibility patches
+      - name: Build
         run: |
-          cd doomgeneric/doomgeneric
+          cd build
+          make -j$(nproc)
 
-          # 1) Config dir → ux0:data/chexquest/
-          sed -i 's|configdir = strdup("");|configdir = strdup("ux0:data/chexquest/");|g' \
-            d_main.c
-
-          # 2) Evita crash su getenv("HOME") == NULL
-          sed -i 's|getenv("HOME")|getenv("HOME") ? getenv("HOME") : "ux0:data/chexquest"|g' \
-            d_main.c || true
-
-          # 3) Aggiungi chex.wad alla lista degli IWAD noti
-          sed -i '/{"doom1.wad"/a\    {"chex.wad",     doom,       registered,  "Chex Quest"},' \
-            d_iwad.c || true
-
-          # 4) Disabilita signal() che non funziona su Vita
-          sed -i 's|signal(SIGINT|// signal(SIGINT|g'   i_system.c || true
-          sed -i 's|signal(SIGTERM|// signal(SIGTERM|g' i_system.c || true
-
-      # ── Genera asset placeholder ────────────────────────────
-      - name: Generate placeholder assets
-        run: |
-          mkdir -p sce_sys/livearea/contents
-          python3 scripts/generate_assets.py
-
-      # ── Compila ─────────────────────────────────────────────
-      - name: Configure & Build
-        run: |
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE="${VITASDK}/share/vita.toolchain.cmake" \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j"$(nproc)"
-
-      # ── Upload VPK ─────────────────────────────────────────
-      - name: Upload VPK artifact
+      - name: Upload VPK
         uses: actions/upload-artifact@v4
         with:
-          name: chexquest-vita-vpk
+          name: ChexQuest-Vita
           path: build/*.vpk
-
-      # ── Upload SELF (per debug) ────────────────────────────
-      - name: Upload SELF artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: chexquest-vita-self
-          path: build/*.self
+          if-no-files-found: error
