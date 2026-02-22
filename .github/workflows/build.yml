@@ -12,21 +12,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            git \
-            curl \
-            wget \
-            python3 \
-            patch \
-            pkg-config
+          sudo apt-get install -y build-essential cmake git python3
 
       - name: Setup VitaSDK
         run: |
@@ -38,52 +30,34 @@ jobs:
           echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
           echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
 
-      - name: Install Vita packages via vdpm
+      - name: Install Vita packages
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
           cd /tmp/vdpm
-          # Installa i pacchetti uno per uno con vdpm
           vdpm zlib || true
           vdpm libpng || true
           vdpm libogg || true
           vdpm libvorbis || true
-          vdpm libmikmod || true
-          vdpm libFLAC || true
-          vdpm mpg123 || true
           vdpm SDL2 || true
           vdpm SDL2_mixer || true
-          vdpm SDL2_net || true
 
-      - name: Clone Chocolate Doom
-        run: |
-          git clone --depth 1 --branch chocolate-doom-3.0.1 \
-            https://github.com/chocolate-doom/chocolate-doom.git
+      - name: Generate assets
+        run: python3 scripts/gen_assets.py
 
-      - name: Prepare Vita source files
+      - name: Configure
         run: |
-          chmod +x scripts/prepare.sh
-          bash scripts/prepare.sh
-
-      - name: Generate placeholder assets
-        run: |
-          mkdir -p sce_sys/livearea/contents
-          python3 scripts/gen_assets.py
-
-      - name: Configure build
-        run: |
-          export VITASDK=/usr/local/vitasdk
-          export PATH=$VITASDK/bin:$PATH
-          mkdir -p build
-          cd build
+          mkdir -p build && cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release \
-                ..
+                -DCMAKE_BUILD_TYPE=Release ..
 
       - name: Build
         run: |
           cd build
           make -j$(nproc) VERBOSE=1 2>&1 | tee build.log
+          echo "=== Build directory contents ==="
+          ls -la
+          ls -la *.vpk *.self 2>/dev/null || echo "No output files found"
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
@@ -92,9 +66,9 @@ jobs:
           path: build/*.vpk
           if-no-files-found: warn
 
-      - name: Upload build log on failure
+      - name: Upload build log
         uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: build-log
           path: build/build.log
