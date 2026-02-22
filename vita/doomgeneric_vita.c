@@ -1,8 +1,3 @@
-/*
- * doomgeneric_vita.c - PS Vita platform for doomgeneric
- * Provides: display, input, timing, AND stubs for removed modules
- */
-
 #include "doomgeneric.h"
 #include "doomkeys.h"
 #include "doomtype.h"
@@ -22,10 +17,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
-/* ============================================================
- * DISPLAY
- * ============================================================ */
+#define TICRATE 35
+
 #define VITA_W       960
 #define VITA_H       544
 #define VITA_STRIDE  1024
@@ -66,9 +61,6 @@ static void init_display(void) {
     sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
 }
 
-/* ============================================================
- * INPUT
- * ============================================================ */
 #define KQUEUE_SZ 64
 #define DEADZONE  35
 
@@ -76,7 +68,7 @@ static struct { int pressed; unsigned char key; } kq[KQUEUE_SZ];
 static int kq_r = 0, kq_w = 0;
 static SceCtrlData pad_prev;
 static int input_init = 0;
-static int analog_held[6]; /* up down sleft sright tleft tright */
+static int analog_held[6];
 
 static void kq_push(int p, unsigned char k) {
     int n = (kq_w + 1) % KQUEUE_SZ;
@@ -132,13 +124,10 @@ static void poll_input(void) {
         if (!now && was) kq_push(0, bm[i].key);
     }
 
-    /* Left stick: move */
     analog_axis(pad.ly - 128, KEY_UPARROW, KEY_DOWNARROW, &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L, KEY_STRAFE_R, &analog_held[2], &analog_held[3]);
-    /* Right stick: turn */
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW, &analog_held[4], &analog_held[5]);
 
-    /* Touch: weapon select */
     SceTouchData touch;
     sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
     if (touch.reportNum > 0 && touch.report[0].y / 2 < 60) {
@@ -148,10 +137,6 @@ static void poll_input(void) {
 
     pad_prev = pad;
 }
-
-/* ============================================================
- * DOOMGENERIC INTERFACE
- * ============================================================ */
 
 void DG_Init(void) {
     scePowerSetArmClockFrequency(444);
@@ -208,9 +193,7 @@ void DG_DrawFrame(void) {
     poll_input();
 }
 
-void DG_SleepMs(uint32_t ms) {
-    sceKernelDelayThread(ms * 1000);
-}
+void DG_SleepMs(uint32_t ms) { sceKernelDelayThread(ms * 1000); }
 
 uint32_t DG_GetTicksMs(void) {
     SceRtcTick t; sceRtcGetCurrentTick(&t);
@@ -227,16 +210,11 @@ int DG_GetKey(int *pressed, unsigned char *key) {
 
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
-/* ============================================================
- * STUBS for removed i_*.c files
- * doomgeneric's engine calls these - we provide no-ops
- * ============================================================ */
+/* === STUBS for removed i_*.c files === */
 
-/* i_system.c stubs */
 void I_Init(void) {}
 void I_Quit(void) { sceKernelExitProcess(0); }
 void I_Error(char *error, ...) {
-    /* Write to log file for debugging */
     va_list args;
     FILE *f = fopen("ux0:/data/chexquest/error.log", "a");
     if (f) {
@@ -257,37 +235,30 @@ byte *I_ZoneBase(int *size) {
     return (byte *)malloc(*size);
 }
 
-/* i_timer.c stubs */
 int I_GetTime_RealTime(void) { return DG_GetTicksMs() * TICRATE / 1000; }
 int I_GetTimeMS(void) { return DG_GetTicksMs(); }
 void I_InitTimer(void) {}
 
-/* i_video.c stubs - doomgeneric handles this but engine may call these */
 void I_InitGraphics(void) {}
 void I_ShutdownGraphics(void) {}
 void I_StartFrame(void) {}
 void I_StartTic(void) {}
 void I_UpdateNoBlit(void) {}
 void I_FinishUpdate(void) {}
-void I_ReadScreen(byte *scr) {
-    memcpy(scr, DG_ScreenBuffer, DOOM_W * DOOM_H * 4);
-}
+void I_ReadScreen(byte *scr) { memcpy(scr, DG_ScreenBuffer, DOOM_W * DOOM_H * 4); }
 void I_SetPalette(byte *palette) { (void)palette; }
 void I_EnableLoadingDisk(void) {}
 void I_BeginRead(void) {}
 void I_EndRead(void) {}
 void I_SetWindowTitle(char *title) { (void)title; }
 
-/* i_input.c stubs */
 void I_InitInput(void) {}
 void I_ShutdownInput(void) {}
 
-/* i_joystick.c stubs */
 void I_InitJoystick(void) {}
 void I_ShutdownJoystick(void) {}
 void I_UpdateJoystick(void) {}
 
-/* i_sound.c stubs - no sound for now */
 int I_GetSfxLumpNum(void *sfxinfo) { (void)sfxinfo; return 0; }
 void I_SetChannels(void) {}
 void I_SetSfxVolume(int volume) { (void)volume; }
@@ -312,7 +283,6 @@ void I_StopSong(void) {}
 void I_UnRegisterSong(void *handle) { (void)handle; }
 void *I_RegisterSong(void *data, int len) { (void)data; (void)len; return NULL; }
 
-/* i_cdmus.c stubs */
 int I_CDMusInit(void) { return 0; }
 void I_CDMusShutdown(void) {}
 void I_CDMusUpdate(void) {}
@@ -323,21 +293,12 @@ int I_CDMusFirstTrack(void) { return 0; }
 int I_CDMusLastTrack(void) { return 0; }
 int I_CDMusTrackLength(int track) { (void)track; return 0; }
 
-/* i_endoom.c stubs */
 void I_Endoom(byte *data) { (void)data; }
-
-/* i_scale.c stubs */
 void I_InitScale(void) {}
 
-/* icon.c stubs */
-
-/* gusconf.c stubs */
 char *gus_patch_path = "";
 int gus_ram_kb = 0;
 
-/* ============================================================
- * MAIN
- * ============================================================ */
 int main(int argc, char **argv) {
     const char *wad = "ux0:/data/chexquest/chex.wad";
     SceUID fd = sceIoOpen(wad, SCE_O_RDONLY, 0);
