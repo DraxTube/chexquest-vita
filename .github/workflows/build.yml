@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git python3
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git python3 unzip
 
       - name: Setup VitaSDK
         run: |
@@ -31,16 +31,13 @@ jobs:
       - name: Verify VitaSDK tools
         run: |
           which arm-vita-eabi-gcc && echo "GCC OK"
-          which vita-elf-create && echo "vita-elf-create OK" || echo "vita-elf-create MISSING"
-          which vita-make-fself && echo "vita-make-fself OK" || echo "vita-make-fself MISSING"
-          which vita-mksfoex && echo "vita-mksfoex OK" || echo "vita-mksfoex MISSING"
-          which vita-pack-vpk && echo "vita-pack-vpk OK" || echo "vita-pack-vpk MISSING"
+          which vita-elf-create && echo "vita-elf-create OK"
+          which vita-make-fself && echo "vita-make-fself OK"
+          which vita-mksfoex && echo "vita-mksfoex OK"
+          which vita-pack-vpk && echo "vita-pack-vpk OK"
 
       - name: Clone doomgeneric
-        run: |
-          git clone --depth 1 https://github.com/ozkl/doomgeneric.git
-          echo "=== doomgeneric .c files ==="
-          ls doomgeneric/doomgeneric/*.c
+        run: git clone --depth 1 https://github.com/ozkl/doomgeneric.git
 
       - name: Copy Vita platform file
         run: cp vita/doomgeneric_vita.c doomgeneric/doomgeneric/
@@ -53,26 +50,40 @@ jobs:
           mkdir -p build && cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
                 -DCMAKE_BUILD_TYPE=Release .. 2>&1 | tee cmake.log
-          echo ""
-          echo "=== CMAKE EXIT CODE: $? ==="
 
       - name: Build
         run: |
           cd build
           make -j$(nproc) 2>&1 | tee build.log
-          BUILD_EXIT=$?
-          echo ""
-          echo "=== MAKE EXIT CODE: $BUILD_EXIT ==="
-          echo ""
-          echo "=== All files in build/ ==="
-          ls -la
-          echo ""
-          echo "=== Looking for output files ==="
-          find . -name "*.vpk" -o -name "*.self" -o -name "*.velf" -o -name "*.elf" | head -20
-          echo ""
-          if [ $BUILD_EXIT -ne 0 ]; then
-            echo "BUILD FAILED"
-            exit 1
+
+      - name: Verify VPK contents
+        run: |
+          cd build
+          echo "=== Files in build dir ==="
+          ls -la *.vpk *.self *.velf 2>/dev/null
+          
+          if [ -f ChexQuestVita.vpk ]; then
+            echo "=== VPK contents ==="
+            unzip -l ChexQuestVita.vpk
+            echo ""
+            echo "=== Extracting to check ==="
+            mkdir -p vpk_check
+            cd vpk_check
+            unzip -o ../ChexQuestVita.vpk
+            echo ""
+            echo "=== param.sfo exists? ==="
+            ls -la sce_sys/param.sfo 2>/dev/null || echo "NO param.sfo!"
+            echo ""
+            echo "=== icon0.png exists? ==="
+            ls -la sce_sys/icon0.png 2>/dev/null || echo "NO icon0.png!"
+            echo ""
+            echo "=== eboot.bin exists? ==="
+            ls -la eboot.bin 2>/dev/null || echo "NO eboot.bin!"
+            echo ""
+            echo "=== Full tree ==="
+            find . -type f
+          else
+            echo "NO VPK FILE FOUND!"
           fi
 
       - name: Upload VPK
