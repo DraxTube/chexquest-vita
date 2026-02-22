@@ -22,37 +22,28 @@ set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
 # Collect all C files
 file(GLOB DG_SOURCES "${DG_DIR}/*.c")
 
-# Remove ALL other platform files - keep ONLY our vita one
-# This is the fix: use a whitelist approach instead of blacklist
-set(PLATFORM_FILES_TO_REMOVE)
+# Remove ALL platform files except our vita one and the core doomgeneric.c
+set(PLATFORM_TO_REMOVE)
 foreach(src ${DG_SOURCES})
     get_filename_component(name ${src} NAME)
     if(name MATCHES "^doomgeneric_.*\\.c$" AND NOT name STREQUAL "doomgeneric_vita.c" AND NOT name STREQUAL "doomgeneric.c")
-        list(APPEND PLATFORM_FILES_TO_REMOVE ${src})
+        list(APPEND PLATFORM_TO_REMOVE ${src})
+    endif()
+    # Also remove i_main.c (we have our own main in doomgeneric_vita.c)
+    if(name STREQUAL "i_main.c")
+        list(APPEND PLATFORM_TO_REMOVE ${src})
     endif()
 endforeach()
 
-foreach(src ${PLATFORM_FILES_TO_REMOVE})
+foreach(src ${PLATFORM_TO_REMOVE})
     list(REMOVE_ITEM DG_SOURCES ${src})
     get_filename_component(name ${src} NAME)
     message(STATUS "Excluded: ${name}")
 endforeach()
 
-# Also remove i_main.c if it has its own main()
-foreach(src ${DG_SOURCES})
-    get_filename_component(name ${src} NAME)
-    if(name STREQUAL "i_main.c")
-        list(REMOVE_ITEM DG_SOURCES ${src})
-        message(STATUS "Excluded: ${name}")
-    endif()
-endforeach()
-
-# Print what we ARE compiling
-message(STATUS "=== Compiling ===")
-foreach(src ${DG_SOURCES})
-    get_filename_component(name ${src} NAME)
-    message(STATUS "  ${name}")
-endforeach()
+message(STATUS "=== Compiling ${CMAKE_PROJECT_NAME} ===")
+list(LENGTH DG_SOURCES num_sources)
+message(STATUS "Total source files: ${num_sources}")
 
 add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
@@ -66,8 +57,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     FEATURE_SOUND=0
 )
 
+# Only link Vita system stubs - no external libraries needed!
 target_link_libraries(${PROJECT_NAME}
-    vita2d
     SceDisplay_stub
     SceCtrl_stub
     SceTouch_stub
@@ -75,7 +66,6 @@ target_link_libraries(${PROJECT_NAME}
     SceSysmodule_stub
     SceGxm_stub
     SceCommonDialog_stub
-    ScePgf_stub
     SceAppMgr_stub
     SceAppUtil_stub
     SceIofilemgr_stub
@@ -84,9 +74,8 @@ target_link_libraries(${PROJECT_NAME}
     ScePower_stub
     SceRtc_stub
     SceHid_stub
+    SceSysmem_stub
     pthread
-    png
-    z
     m
     c
 )
