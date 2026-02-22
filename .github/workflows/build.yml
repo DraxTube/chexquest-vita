@@ -19,6 +19,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake git python3 unzip
 
       - name: Setup VitaSDK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
@@ -27,14 +29,6 @@ jobs:
           ./bootstrap-vitasdk.sh
           echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
           echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
-
-      - name: Verify VitaSDK tools
-        run: |
-          which arm-vita-eabi-gcc && echo "GCC OK"
-          which vita-elf-create && echo "vita-elf-create OK"
-          which vita-make-fself && echo "vita-make-fself OK"
-          which vita-mksfoex && echo "vita-mksfoex OK"
-          which vita-pack-vpk && echo "vita-pack-vpk OK"
 
       - name: Clone doomgeneric
         run: git clone --depth 1 https://github.com/ozkl/doomgeneric.git
@@ -49,41 +43,20 @@ jobs:
         run: |
           mkdir -p build && cd build
           cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release .. 2>&1 | tee cmake.log
+                -DCMAKE_BUILD_TYPE=Release ..
 
       - name: Build
         run: |
           cd build
           make -j$(nproc) 2>&1 | tee build.log
 
-      - name: Verify VPK contents
+      - name: Verify VPK
         run: |
           cd build
-          echo "=== Files in build dir ==="
-          ls -la *.vpk *.self *.velf 2>/dev/null
-          
+          ls -la *.vpk 2>/dev/null
           if [ -f ChexQuestVita.vpk ]; then
             echo "=== VPK contents ==="
             unzip -l ChexQuestVita.vpk
-            echo ""
-            echo "=== Extracting to check ==="
-            mkdir -p vpk_check
-            cd vpk_check
-            unzip -o ../ChexQuestVita.vpk
-            echo ""
-            echo "=== param.sfo exists? ==="
-            ls -la sce_sys/param.sfo 2>/dev/null || echo "NO param.sfo!"
-            echo ""
-            echo "=== icon0.png exists? ==="
-            ls -la sce_sys/icon0.png 2>/dev/null || echo "NO icon0.png!"
-            echo ""
-            echo "=== eboot.bin exists? ==="
-            ls -la eboot.bin 2>/dev/null || echo "NO eboot.bin!"
-            echo ""
-            echo "=== Full tree ==="
-            find . -type f
-          else
-            echo "NO VPK FILE FOUND!"
           fi
 
       - name: Upload VPK
@@ -98,6 +71,4 @@ jobs:
         if: always()
         with:
           name: build-log
-          path: |
-            build/build.log
-            build/cmake.log
+          path: build/build.log
