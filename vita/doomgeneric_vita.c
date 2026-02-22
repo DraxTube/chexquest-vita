@@ -25,7 +25,6 @@
 
 #define VITA_W       960
 #define VITA_H       544
-#define VITA_STRIDE  960
 #define DOOM_W       DOOMGENERIC_RESX
 #define DOOM_H       DOOMGENERIC_RESY
 
@@ -40,8 +39,9 @@ int snd_musicdevice = 0;
 int mouse_acceleration = 0;
 int mouse_threshold = 0;
 
-/* Framebuffer - single buffer, simpler */
-static uint32_t vita_framebuffer[960 * 544] __attribute__((aligned(256)));
+/* Display - use CDRAM for framebuffer */
+static SceUID fb_memuid;
+static void *fb_base = NULL;
 static uint64_t start_tick = 0;
 static int display_ready = 0;
 
@@ -59,20 +59,61 @@ static void debug_logf(const char *fmt, ...) {
     debug_log(buf);
 }
 
-static void show_color(uint32_t color) {
-    int i;
-    for (i = 0; i < 960 * 544; i++)
-        vita_framebuffer[i] = color;
+static void init_display(void) {
+    int sz = (960 * 544 * 4 + 0xFFFFF) & ~0xFFFFF;  /* align to 1MB */
+
+    fb_memuid = sceKernelAllocMemBlock("framebuffer",
+        SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, sz, NULL);
+
+    if (fb_memuid < 0) {
+        debug_logf("CDRAM alloc failed: 0x%08X, trying main RAM", fb_memuid);
+        fb_memuid = sceKernelAllocMemBlock("framebuffer",
+            SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, sz, NULL);
+    }
+
+    if (fb_memuid < 0) {
+        debug_logf("All alloc failed: 0x%08X", fb_memuid);
+        return;
+    }
+
+    sceKernelGetMemBlockBase(fb_memuid, &fb_base);
+    memset(fb_base, 0, sz);
+
+    debug_logf("Framebuffer at %p, size %d", fb_base, sz);
 
     SceDisplayFrameBuf fb;
     memset(&fb, 0, sizeof(fb));
     fb.size = sizeof(fb);
-    fb.base = vita_framebuffer;
-    fb.pitch = VITA_W;
+    fb.base = fb_base;
+    fb.pitch = 960;
     fb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
-    fb.width = VITA_W;
-    fb.height = VITA_H;
+    fb.width = 960;
+    fb.height = 544;
+
+    int ret = sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+    debug_logf("sceDisplaySetFrameBuf returned: 0x%08X", ret);
+    sceDisplayWaitVblankStart();
+
+    display_ready = 1;
+}
+
+static void show_color(uint32_t color) {
+    if (!fb_base) return;
+    uint32_t *pixels = (uint32_t *)fb_base;
+    int i;
+    for (i = 0; i < 960 * 544; i++)
+        pixels[i] = color;
+
+    SceDisplayFrameBuf fb;
+    memset(&fb, 0, sizeof(fb));
+    fb.size = sizeof(fb);
+    fb.base = fb_base;
+    fb.pitch = 960;
+    fb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+    fb.width = 960;
+    fb.height = 544;
     sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+    sceDisplayWaitVblankStart();
     sceDisplayWaitVblankStart();
 }
 
@@ -157,18 +198,37 @@ static void poll_input(void) {
 /* DG interface */
 void DG_Init(void) {
     debug_log("DG_Init called");
-    /* Display already initialized in main() */
-    display_ready = 1;
-    show_color(0xFFFFFF00); /* cyan = DG_Init OK */
-    sceKernelDelayThread(500000);
 }
 
 void DG_DrawFrame(void) {
-    if (!display_ready) return;
+    static int frame_count = 0;
+
+    if (!fb_base) {
+        debug_log("DG_DrawFrame: no framebuffer!");
+        return;
+    }
 
     uint32_t *src = (uint32_t *)DG_ScreenBuffer;
-    if (!src) return;
+    if (!src) {
+        debug_log("DG_DrawFrame: DG_ScreenBuffer is NULL!");
+        return;
+    }
 
+    if (frame_count < 5) {
+        debug_logf("Frame %d: src=%p px[0]=%08X px[100]=%08X px[1000]=%08X",
+                   frame_count, src, src[0], src[100], src[1000]);
+    }
+
+    if (frame_count == 10) {
+        int has_data = 0;
+        int i;
+        for (i = 0; i < DOOM_W * DOOM_H; i++) {
+            if (src[i] != 0) { has_data = 1; break; }
+        }
+        debug_logf("Frame 10: has_data=%d DOOM_W=%d DOOM_H=%d", has_data, DOOM_W, DOOM_H);
+    }
+
+    uint32_t *dst = (uint32_t *)fb_base;
     int x, y;
     int step_x = (DOOM_W << 16) / VITA_W;
     int step_y = (DOOM_H << 16) / VITA_H;
@@ -177,7 +237,7 @@ void DG_DrawFrame(void) {
     for (y = 0; y < VITA_H; y++) {
         int srcy = src_y_fixed >> 16;
         if (srcy >= DOOM_H) srcy = DOOM_H - 1;
-        uint32_t *dst_row = vita_framebuffer + y * VITA_W;
+        uint32_t *dst_row = dst + y * 960;
         uint32_t *src_row = src + srcy * DOOM_W;
 
         int src_x_fixed = 0;
@@ -197,15 +257,16 @@ void DG_DrawFrame(void) {
     SceDisplayFrameBuf dfb;
     memset(&dfb, 0, sizeof(dfb));
     dfb.size = sizeof(dfb);
-    dfb.base = vita_framebuffer;
-    dfb.pitch = VITA_W;
+    dfb.base = fb_base;
+    dfb.pitch = 960;
     dfb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
-    dfb.width = VITA_W;
-    dfb.height = VITA_H;
+    dfb.width = 960;
+    dfb.height = 544;
     sceDisplaySetFrameBuf(&dfb, SCE_DISPLAY_SETBUF_NEXTFRAME);
     sceDisplayWaitVblankStart();
 
     poll_input();
+    frame_count++;
 }
 
 void DG_SleepMs(uint32_t ms) { sceKernelDelayThread(ms * 1000); }
@@ -225,7 +286,7 @@ int DG_GetKey(int *pressed, unsigned char *key) {
 
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
-/* === ALL STUBS === */
+/* === STUBS === */
 void I_Init(void) {}
 void I_Quit(void) { sceKernelExitProcess(0); }
 void I_Error(char *error, ...) {
@@ -235,8 +296,10 @@ void I_Error(char *error, ...) {
     vsnprintf(buf, sizeof(buf), error, args);
     va_end(args);
     debug_log(buf);
-    show_color(0xFF0000FF); /* red */
-    sceKernelDelayThread(5000000);
+    if (fb_base) {
+        show_color(0xFF0000FF);
+        sceKernelDelayThread(5000000);
+    }
     sceKernelExitProcess(0);
 }
 void I_WaitVBL(int count) { sceKernelDelayThread(count * 14286); }
@@ -247,7 +310,7 @@ byte *I_ZoneBase(int *size) {
     byte *ptr = (byte *)malloc(*size);
     if (!ptr) { *size = 8 * 1024 * 1024; ptr = (byte *)malloc(*size); }
     if (!ptr) { *size = 4 * 1024 * 1024; ptr = (byte *)malloc(*size); }
-    debug_logf("ZoneBase: allocated %d bytes at %p", *size, ptr);
+    debug_logf("ZoneBase: %d bytes at %p", *size, ptr);
     return ptr;
 }
 void I_Tactile(int on, int off, int total) { (void)on; (void)off; (void)total; }
@@ -334,7 +397,6 @@ int gus_ram_kb = 0;
 
 /* MAIN */
 int main(int argc, char **argv) {
-    /* Basic init */
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
     scePowerSetGpuClockFrequency(222);
@@ -347,19 +409,24 @@ int main(int argc, char **argv) {
     sceIoMkdir("ux0:/data/", 0777);
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
-    /* Clear old log */
     sceIoRemove("ux0:/data/chexquest/debug.log");
     debug_log("=== Chex Quest Vita ===");
 
-    /* Init framebuffer with static array (no alloc needed) */
-    memset(vita_framebuffer, 0, sizeof(vita_framebuffer));
+    /* Init display */
+    init_display();
 
-    /* Show GREEN = we are alive */
-    debug_log("Showing green screen");
+    if (!display_ready) {
+        debug_log("FATAL: Display init failed!");
+        sceKernelDelayThread(5000000);
+        sceKernelExitProcess(0);
+        return 1;
+    }
+
+    /* GREEN = alive */
+    debug_log("Display OK - showing green");
     show_color(0xFF00FF00);
-    sceKernelDelayThread(2000000); /* 2 seconds */
+    sceKernelDelayThread(2000000);
 
-    /* Get start tick */
     SceRtcTick t;
     sceRtcGetCurrentTick(&t);
     start_tick = t.tick;
@@ -390,14 +457,12 @@ int main(int argc, char **argv) {
 
     if (!wad) {
         debug_log("NO WAD FOUND!");
-        /* YELLOW = no wad */
         show_color(0xFF00FFFF);
         sceKernelDelayThread(10000000);
         sceKernelExitProcess(0);
         return 1;
     }
 
-    /* CYAN = starting engine */
     debug_log("Starting engine...");
     show_color(0xFFFFFF00);
     sceKernelDelayThread(1000000);
@@ -405,13 +470,12 @@ int main(int argc, char **argv) {
     char *nargv[] = { "ChexQuest", "-iwad", (char*)wad, NULL };
     debug_log("Calling doomgeneric_Create");
     doomgeneric_Create(3, nargv);
-    debug_log("doomgeneric_Create returned OK");
+    debug_log("doomgeneric_Create OK");
 
-    /* MAGENTA = entering game loop */
     show_color(0xFFFF00FF);
     sceKernelDelayThread(500000);
 
-    debug_log("Entering main loop");
+    debug_log("Main loop");
     while (1) {
         doomgeneric_Tick();
     }
