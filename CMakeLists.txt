@@ -15,45 +15,50 @@ set(VITA_APP_NAME "Chex Quest")
 set(VITA_TITLEID  "CHEX00001")
 set(VITA_VERSION  "01.00")
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wno-implicit-function-declaration -Wno-int-conversion -Wno-pointer-sign -Wno-incompatible-pointer-types -Wno-unused-result -Wno-shift-negative-value -fno-strict-aliasing")
+# Suppress warnings from original Doom source (it's old C)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -w -fno-strict-aliasing -DNORMALUNIX -DLINUX -DVITA")
 
-# All sources in src/
-file(GLOB GAME_SOURCES "src/*.c")
+# doomgeneric source directory
+set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
 
-# Vita platform sources
-set(VITA_SOURCES
-    vita/i_video_vita.c
-    vita/i_sound_vita.c
-    vita/i_system_vita.c
-    vita/i_net_vita.c
-)
+# Collect ALL doomgeneric C files
+file(GLOB DG_SOURCES "${DG_DIR}/*.c")
 
-add_executable(${PROJECT_NAME}
-    ${GAME_SOURCES}
-    ${VITA_SOURCES}
-)
+# Remove other platform implementations (we only want our vita one)
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_sdl\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_win\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_xlib\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_sdl2\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_soso\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_txt\\.c$")
+list(FILTER DG_SOURCES EXCLUDE REGEX ".*doomgeneric_ascii\\.c$")
+
+# Verify our vita file is there
+if(NOT EXISTS "${DG_DIR}/doomgeneric_vita.c")
+    message(FATAL_ERROR "doomgeneric_vita.c not found in ${DG_DIR}!")
+endif()
+
+# Print what we're compiling
+message(STATUS "=== Source files ===")
+foreach(src ${DG_SOURCES})
+    get_filename_component(name ${src} NAME)
+    message(STATUS "  ${name}")
+endforeach()
+
+add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
-    src
-    vita
+    ${DG_DIR}
+    ${CMAKE_SOURCE_DIR}/vita
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     VITA=1
-    NORMALUNIX=1
-    LINUX=1
+    FEATURE_SOUND=0
 )
 
 target_link_libraries(${PROJECT_NAME}
-    SDL2_mixer
     SDL2
-    vorbisfile
-    vorbis
-    ogg
-    mikmod
-    FLAC
-    mpg123
-    png
     vita2d
     SceDisplay_stub
     SceCtrl_stub
@@ -70,10 +75,9 @@ target_link_libraries(${PROJECT_NAME}
     SceKernelThreadMgr_stub
     ScePower_stub
     SceRtc_stub
-    SceNet_stub
-    SceNetCtl_stub
     SceHid_stub
     pthread
+    png
     z
     m
     c
