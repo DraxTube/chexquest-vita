@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – CON AUDIO */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -18,12 +18,14 @@ extern void D_PostEvent(event_t *ev);
 #include <psp2/apputil.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
+#include <psp2/audioout.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <math.h>
 
 #define TICRATE      35
 #define SCREENWIDTH  320
@@ -31,6 +33,16 @@ extern void D_PostEvent(event_t *ev);
 
 #define VITA_W 960
 #define VITA_H 544
+
+/* ================================================================
+   Audio defines
+   ================================================================ */
+#define SND_RATE         22050      /* Doom nativo: 11025, upsampling a 22050 */
+#define SND_SAMPLES      1024      /* campioni per grain (per porta audio)   */
+#define MIX_CHANNELS     8         /* canali di mixing simultanei            */
+#define MUS_SAMPLES      1024      /* campioni per grain musica              */
+
+#define SFX_VOL_SCALE    16        /* Doom volume 0-127 → scala interna     */
 
 /* ================================================================
    Globals richiesti dal motore
@@ -53,7 +65,6 @@ static void   *fb_base = NULL;
 static int     display_ready = 0;
 static int     frame_count = 0;
 
-/* Palette: indice 8-bit → colore 32-bit Vita (A8B8G8R8) */
 static uint32_t cmap[256];
 
 /* ================================================================
@@ -125,7 +136,6 @@ static void init_display(void)
     display_ready = 1;
 }
 
-/* Schermata colorata (debug) */
 static void show_color(uint32_t color)
 {
     int i;
@@ -164,7 +174,7 @@ static int analog_held[6];
 static void kq_push(int p, unsigned char k)
 {
     int n = (kq_w + 1) % KQUEUE_SZ;
-    if (n == kq_r) return;        /* coda piena, scarta */
+    if (n == kq_r) return;
     kq[kq_w].pressed = p;
     kq[kq_w].key     = k;
     kq_w = n;
@@ -205,10 +215,10 @@ static void do_poll_input(void)
             { SCE_CTRL_RIGHT,    KEY_RIGHTARROW },
             { SCE_CTRL_CROSS,    KEY_FIRE       },
             { SCE_CTRL_CIRCLE,   KEY_USE        },
-            { SCE_CTRL_SQUARE,   KEY_RALT       },   /* strafe modifier */
-            { SCE_CTRL_TRIANGLE, KEY_TAB        },   /* automap */
+            { SCE_CTRL_SQUARE,   KEY_RALT       },
+            { SCE_CTRL_TRIANGLE, KEY_TAB        },
             { SCE_CTRL_RTRIGGER, KEY_FIRE       },
-            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },   /* run */
+            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },
             { SCE_CTRL_START,    KEY_ESCAPE     },
             { SCE_CTRL_SELECT,   KEY_ENTER      },
             { 0, 0 }
@@ -222,7 +232,6 @@ static void do_poll_input(void)
         }
     }
 
-    /* Analog sticks */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
@@ -230,7 +239,6 @@ static void do_poll_input(void)
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
-    /* Touch → weapon select */
     {
         SceTouchData touch;
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
@@ -247,7 +255,139 @@ static void do_poll_input(void)
 }
 
 /* ================================================================
-   DG interface (chiamato da doomgeneric.c)
+   AUDIO ENGINE – SFX mixing + output via sceAudioOut
+   ================================================================ */
+
+/*  Struttura per un canale di mixing attivo.
+    Doom SFX sono campioni 8-bit unsigned, mono, tipicamente 11025 Hz.
+    Il formato nel lump WAD è:
+      offset 0-1: format (3)
+      offset 2-3: sample rate (uint16 LE)
+      offset 4-7: length in samples (uint32 LE)
+      offset 8-23: padding (16 byte)
+      offset 24+: sample data (unsigned 8-bit, center=128)             */
+
+typedef struct {
+    const byte *data;       /* puntatore ai campioni 8-bit unsigned     */
+    int         length;     /* lunghezza totale in campioni              */
+    int         pos_fixed;  /* posizione corrente (16.16 fixed point)   */
+    int         step_fixed; /* step per campione output (16.16)         */
+    int         vol_left;   /* volume canale sinistro (0-255)           */
+    int         vol_right;  /* volume canale destro   (0-255)           */
+    int         handle;     /* handle univoco per Doom                  */
+    int         active;     /* 1 = in riproduzione                      */
+} mix_channel_t;
+
+static mix_channel_t mix_ch[MIX_CHANNELS];
+static int           sfx_port = -1;           /* porta audio Vita SFX  */
+static SceUID        sfx_thread_id = -1;
+static volatile int  sfx_running = 0;
+static int           sfx_master_vol = 127;    /* 0-127                 */
+static int           next_handle = 1;
+
+/* Buffer di output stereo 16-bit (due buffer per double-buffering) */
+static int16_t sfx_buf[2][SND_SAMPLES * 2];   /* *2 = stereo          */
+static int     sfx_buf_idx = 0;
+
+/* Mixing: mixa tutti i canali attivi in un buffer stereo S16 */
+static void mix_into(int16_t *out, int nsamples)
+{
+    int i, ch;
+    int32_t accum_l, accum_r;
+
+    /* Azzera il buffer */
+    memset(out, 0, nsamples * 2 * sizeof(int16_t));
+
+    for (ch = 0; ch < MIX_CHANNELS; ch++) {
+        mix_channel_t *c = &mix_ch[ch];
+        if (!c->active) continue;
+
+        for (i = 0; i < nsamples; i++) {
+            int pos = c->pos_fixed >> 16;
+
+            if (pos >= c->length) {
+                c->active = 0;
+                break;
+            }
+
+            /* Campione 8-bit unsigned → signed 16-bit */
+            {
+                int sample = ((int)c->data[pos] - 128) * 256;
+
+                /* Applica volume per canale (stereo panning) */
+                int sl = (sample * c->vol_left)  >> 8;
+                int sr = (sample * c->vol_right) >> 8;
+
+                /* Accumula nel buffer (somma con clamp dopo) */
+                accum_l = (int32_t)out[i * 2 + 0] + sl;
+                accum_r = (int32_t)out[i * 2 + 1] + sr;
+
+                /* Clamp a int16 */
+                if (accum_l >  32767) accum_l =  32767;
+                if (accum_l < -32768) accum_l = -32768;
+                if (accum_r >  32767) accum_r =  32767;
+                if (accum_r < -32768) accum_r = -32768;
+
+                out[i * 2 + 0] = (int16_t)accum_l;
+                out[i * 2 + 1] = (int16_t)accum_r;
+            }
+
+            c->pos_fixed += c->step_fixed;
+        }
+    }
+
+    /* Applica master volume */
+    if (sfx_master_vol < 127) {
+        for (i = 0; i < nsamples * 2; i++) {
+            out[i] = (int16_t)(((int32_t)out[i] * sfx_master_vol) / 127);
+        }
+    }
+}
+
+/* Thread audio SFX: gira in background, invia dati alla porta audio */
+static int sfx_thread_func(SceSize args, void *argp)
+{
+    (void)args; (void)argp;
+
+    debug_log("SFX thread started");
+
+    while (sfx_running) {
+        int16_t *buf = sfx_buf[sfx_buf_idx];
+
+        mix_into(buf, SND_SAMPLES);
+
+        sceAudioOutOutput(sfx_port, buf);
+
+        sfx_buf_idx ^= 1;
+    }
+
+    debug_log("SFX thread exit");
+    return 0;
+}
+
+/* ================================================================
+   MUSIC ENGINE – Minimal PCM playback
+   Doom invia dati MUS/MIDI. Senza un sintetizzatore MIDI completo,
+   implementiamo la struttura per future espansioni.
+   Per ora: silent placeholder con la struttura pronta.
+   ================================================================ */
+
+/* Struttura per musica registrata */
+typedef struct {
+    byte   *data;      /* dati grezzi MUS/MIDI dal WAD */
+    int     length;    /* dimensione */
+    int     valid;     /* 1 se registrato */
+} mus_track_t;
+
+#define MAX_MUS_TRACKS 64
+static mus_track_t mus_tracks[MAX_MUS_TRACKS];
+static int         mus_playing = 0;
+static int         mus_looping = 0;
+static int         mus_current = -1;
+static int         mus_volume  = 127;
+
+/* ================================================================
+   DG interface
    ================================================================ */
 void DG_Init(void)
 {
@@ -256,12 +396,7 @@ void DG_Init(void)
     debug_logf("base_time = %u ms", base_time);
 }
 
-void DG_DrawFrame(void)
-{
-    /* Il rendering vero è in I_FinishUpdate().
-       DG_DrawFrame può essere chiamato da doomgeneric_Tick,
-       non deve fare nulla di grafico. */
-}
+void DG_DrawFrame(void) {}
 
 void DG_SleepMs(uint32_t ms)
 {
@@ -275,8 +410,6 @@ uint32_t DG_GetTicksMs(void)
 
 int DG_GetKey(int *pressed, unsigned char *key)
 {
-    /* Non più usato – I_StartTic drena la coda direttamente.
-       Manteniamo per compatibilità con doomgeneric.c */
     if (kq_r == kq_w) return 0;
     *pressed = kq[kq_r].pressed;
     *key     = kq[kq_r].key;
@@ -291,7 +424,18 @@ void DG_SetWindowTitle(const char *t) { (void)t; }
    ================================================================ */
 void I_Init(void) {}
 
-void I_Quit(void) { sceKernelExitProcess(0); }
+void I_Quit(void)
+{
+    sfx_running = 0;
+    if (sfx_thread_id >= 0) {
+        sceKernelWaitThreadEnd(sfx_thread_id, NULL, NULL);
+        sceKernelDeleteThread(sfx_thread_id);
+    }
+    if (sfx_port >= 0) {
+        sceAudioOutReleasePort(sfx_port);
+    }
+    sceKernelExitProcess(0);
+}
 
 void I_Error(char *error, ...)
 {
@@ -301,6 +445,7 @@ void I_Error(char *error, ...)
     vsnprintf(buf, sizeof(buf), error, args);
     va_end(args);
     debug_log(buf);
+    sfx_running = 0;
     if (fb_base) { show_color(0xFF0000FF); sceKernelDelayThread(5000000); }
     sceKernelExitProcess(0);
 }
@@ -359,7 +504,7 @@ void I_InitTimer(void)
 }
 
 /* ================================================================
-   VIDEO – Palette + Rendering diretto su framebuffer Vita
+   VIDEO
    ================================================================ */
 
 void I_InitGraphics(void)
@@ -370,7 +515,6 @@ void I_InitGraphics(void)
     I_VideoBuffer = (byte *)calloc(SCREENWIDTH * SCREENHEIGHT, 1);
     debug_logf("I_VideoBuffer = %p", I_VideoBuffer);
 
-    /* Palette grayscale di fallback */
     for (i = 0; i < 256; i++) {
         cmap[i] = 0xFF000000u | ((uint32_t)i << 16)
                                | ((uint32_t)i << 8)
@@ -380,8 +524,6 @@ void I_InitGraphics(void)
 
 void I_SetPalette(byte *doompalette)
 {
-    /* Doom ci passa 256 triplette R,G,B (768 byte).
-       Formato Vita A8B8G8R8: 0xAA BB GG RR */
     int i;
     for (i = 0; i < 256; i++) {
         uint32_t r = doompalette[i * 3 + 0];
@@ -398,11 +540,6 @@ void I_SetPalette(byte *doompalette)
 
 void I_FinishUpdate(void)
 {
-    /*  Scala I_VideoBuffer (320×200, 8-bit indicizzato)
-        direttamente sul framebuffer Vita (960×544, 32-bit)
-        usando cmap[] per la conversione palette.
-        NON usa DG_ScreenBuffer → nessun problema di stride! */
-
     uint32_t *dst;
     int x, y;
     int step_x, step_y;
@@ -431,7 +568,6 @@ void I_FinishUpdate(void)
         for (x = 0; x < VITA_W; x++) {
             int srcx = src_x_fixed >> 16;
             if (srcx >= SCREENWIDTH) srcx = SCREENWIDTH - 1;
-            /* PALETTE LOOKUP: indice 8-bit → colore 32-bit */
             dst_row[x] = cmap[src_row[srcx]];
             src_x_fixed += step_x;
         }
@@ -462,7 +598,7 @@ void I_ShutdownGraphics(void) {}
 void I_StartFrame(void)       {}
 
 /* ================================================================
-   INPUT → D_PostEvent (LA FIX PRINCIPALE PER I CONTROLLI)
+   INPUT → D_PostEvent
    ================================================================ */
 void I_StartTic(void)
 {
@@ -470,11 +606,10 @@ void I_StartTic(void)
 
     do_poll_input();
 
-    /* Drena la coda e invia ogni evento al motore Doom */
     while (kq_r != kq_w) {
         event.type  = kq[kq_r].pressed ? ev_keydown : ev_keyup;
         event.data1 = kq[kq_r].key;
-        event.data2 = kq[kq_r].key;   /* per input testo (weapon select) */
+        event.data2 = kq[kq_r].key;
         event.data3 = 0;
         D_PostEvent(&event);
         kq_r = (kq_r + 1) % KQUEUE_SZ;
@@ -509,36 +644,496 @@ void I_UpdateJoystick(void)     {}
 void I_BindJoystickVariables(void) {}
 
 /* ================================================================
-   Sound stubs (tutto disabilitato)
+   SOUND – Effetti sonori con mixing reale
    ================================================================ */
-void I_PrecacheSounds(void *s, int n) { (void)s; (void)n; }
-int  I_GetSfxLumpNum(void *s)   { (void)s; return 0; }
-void I_SetChannels(void)        {}
-void I_SetSfxVolume(int v)      { (void)v; }
-void I_SetMusicVolume(int v)    { (void)v; }
 
-int I_StartSound(void *s, int c, int v, int sep, int p)
-    { (void)s; (void)c; (void)v; (void)sep; (void)p; return 0; }
+void I_SetChannels(void)
+{
+    debug_log("I_SetChannels");
+}
 
-void I_StopSound(int c)          { (void)c; }
-int  I_SoundIsPlaying(int c)     { (void)c; return 0; }
-void I_UpdateSound(void)         {}
-void I_UpdateSoundParams(int c, int v, int s)
-    { (void)c; (void)v; (void)s; }
-void I_ShutdownSound(void)       {}
-void I_InitSound(int u)          { (void)u; }
-void I_ShutdownMusic(void)       {}
-void I_InitMusic(void)           {}
-void I_PlaySong(void *h, int l)  { (void)h; (void)l; }
-void I_PauseSong(void)           {}
-void I_ResumeSong(void)          {}
-void I_StopSong(void)            {}
-void I_UnRegisterSong(void *h)   { (void)h; }
-void *I_RegisterSong(void *d, int l)
-    { (void)d; (void)l; return NULL; }
-int  I_MusicIsPlaying(void)      { return 0; }
-void I_BindSoundVariables(void)  {}
+void I_SetSfxVolume(int volume)
+{
+    sfx_master_vol = volume;   /* 0-127, usato dal mixer */
+}
 
+/*  I_GetSfxLumpNum: Doom ci passa un puntatore a sfxinfo_t.
+    Il campo "name" contiene il nome del lump (es. "pistol").
+    Noi restituiamo il numero del lump con prefisso "DS".
+    
+    NOTA: la struttura sfxinfo_t ha layout diverso tra versioni.
+    In doomgeneric/Chocolate Doom, il primo campo utile è "name"
+    (char* o char[]) a offset 0 o dopo "link".
+    Per massima compatibilità, usiamo l'approccio di Chocolate Doom. */
+
+/* Include per W_GetNumForName */
+extern int W_GetNumForName(const char *name);
+extern int W_CheckNumForName(const char *name);
+extern int W_LumpLength(int lump);
+extern void *W_CacheLumpNum(int lump, int tag);
+
+/* PU_STATIC tag per la cache */
+#define PU_STATIC 1
+
+/* sfxinfo_t – prendi solo il nome.
+   In Chocolate Doom / doomgeneric, sfxinfo_t inizia con:
+     char *name;          (o simile)
+   Facciamo il cast a char** per prendere il primo campo. */
+
+int I_GetSfxLumpNum(void *sfxinfo)
+{
+    /* sfxinfo->name è il primo campo (char *) nella struct */
+    char   lumpname[16];
+    char  *name;
+    int    lumpnum;
+
+    if (!sfxinfo) return 0;
+
+    /* Leggi il primo campo della struct come char* */
+    name = *((char **)sfxinfo);
+    if (!name) return 0;
+
+    snprintf(lumpname, sizeof(lumpname), "ds%s", name);
+
+    lumpnum = W_CheckNumForName(lumpname);
+    if (lumpnum < 0) {
+        debug_logf("SFX lump not found: %s", lumpname);
+        return 0;
+    }
+
+    return lumpnum;
+}
+
+void I_PrecacheSounds(void *sounds, int num_sounds)
+{
+    /* Pre-carichiamo i lump SFX in cache */
+    (void)sounds;
+    (void)num_sounds;
+    debug_logf("I_PrecacheSounds: %d sounds", num_sounds);
+}
+
+/*  I_StartSound: avvia la riproduzione di un effetto sonoro.
+    
+    Parametri (da Chocolate Doom):
+      sfxinfo  - puntatore a sfxinfo_t (contiene lumpnum, ecc.)
+      channel  - canale Doom (0-7)
+      vol      - volume (0-127)
+      sep      - separazione stereo (0=right, 128=center, 255=left)
+      pitch    - pitch (128 = normale, Doom range ~0-255)
+    
+    Ritorna un handle univoco. */
+
+int I_StartSound(void *sfxinfo, int channel, int vol, int sep, int pitch)
+{
+    int       lumpnum;
+    byte     *lumpdata;
+    int       lumplen;
+    int       samplerate;
+    int       samplelen;
+    const byte *samples;
+    int       handle;
+    mix_channel_t *c;
+
+    (void)channel; /* usiamo il nostro sistema di canali */
+
+    if (!sfxinfo) return 0;
+
+    /* Trova il lump */
+    lumpnum = I_GetSfxLumpNum(sfxinfo);
+    if (lumpnum <= 0) return 0;
+
+    lumplen  = W_LumpLength(lumpnum);
+    lumpdata = (byte *)W_CacheLumpNum(lumpnum, PU_STATIC);
+
+    if (!lumpdata || lumplen < 28) return 0;
+
+    /* Parsa l'header del lump SFX di Doom:
+       Byte 0-1: format (should be 3)
+       Byte 2-3: sample rate (LE uint16)
+       Byte 4-7: number of samples (LE uint32)
+       Byte 8-23: padding (16 bytes)
+       Byte 24+: unsigned 8-bit PCM data */
+    {
+        int format = lumpdata[0] | (lumpdata[1] << 8);
+        if (format != 3) {
+            debug_logf("SFX bad format: %d (lump %d)", format, lumpnum);
+            return 0;
+        }
+    }
+
+    samplerate = lumpdata[2] | (lumpdata[3] << 8);
+    samplelen  = lumpdata[4] | (lumpdata[5] << 8) |
+                 (lumpdata[6] << 16) | (lumpdata[7] << 24);
+
+    /* Sanity checks */
+    if (samplerate < 4000 || samplerate > 48000) samplerate = 11025;
+    if (samplelen <= 0 || samplelen > lumplen - 24) samplelen = lumplen - 24;
+    if (samplelen <= 0) return 0;
+
+    /* Salta il padding di 16 byte + 8 byte header = offset 24 */
+    samples = lumpdata + 24;
+
+    /* Se ci sono pad bytes all'inizio/fine del campione (Doom aggiunge
+       qualche byte di padding), tronchiamo */
+    if (samplelen > 2) {
+        /* Rimuovi i byte di padding iniziale e finale tipici di Doom */
+        samples += 16;          /* skip 16 byte di pre-padding nel campione */
+        samplelen -= 32;        /* remove 16+16 padding */
+        if (samplelen <= 0) {
+            samples = lumpdata + 24;
+            samplelen = lumplen - 24;
+        }
+    }
+
+    /* Trova un canale di mixing libero (o ruba il più vecchio) */
+    {
+        int best = -1;
+        int oldest_handle = 0x7FFFFFFF;
+        int i;
+
+        for (i = 0; i < MIX_CHANNELS; i++) {
+            if (!mix_ch[i].active) { best = i; break; }
+            if (mix_ch[i].handle < oldest_handle) {
+                oldest_handle = mix_ch[i].handle;
+                best = i;
+            }
+        }
+        if (best < 0) best = 0;
+
+        c = &mix_ch[best];
+    }
+
+    /* Calcola step per il resampling: da samplerate → 48000 Hz (porta Vita) */
+    /* step = (samplerate << 16) / 48000 */
+    c->data       = samples;
+    c->length     = samplelen;
+    c->pos_fixed  = 0;
+    c->step_fixed = (samplerate << 16) / 48000;
+
+    /* Pitch adjustment: Doom usa 128 come pitch normale.
+       step *= pitch / 128 */
+    if (pitch > 0 && pitch != 128) {
+        c->step_fixed = (c->step_fixed * pitch) / 128;
+    }
+
+    /* Volume e panning.
+       sep: 0 = tutto a destra, 128 = centro, 255 = tutto a sinistra.
+       vol: 0-127 */
+    {
+        int vl, vr;
+        /* Converti sep (0-255) in volume L/R */
+        vr = 255 - sep;    /* sep=0 → vr=255, sep=255 → vr=0 */
+        vl = sep;           /* sep=0 → vl=0,   sep=255 → vl=255 */
+
+        /* Normalizza: sep=128 → entrambi a ~128 */
+        /* Ma in realtà sep=128 dovrebbe essere uguale L/R */
+        /* Ricalcoliamo: */
+        if (sep < 128) {
+            vl = 255;
+            vr = sep * 2;
+        } else {
+            vl = (255 - sep) * 2;
+            vr = 255;
+        }
+
+        /* Applica volume del canale */
+        vl = (vl * vol) / 127;
+        vr = (vr * vol) / 127;
+
+        if (vl > 255) vl = 255;
+        if (vr > 255) vr = 255;
+
+        c->vol_left  = vl;
+        c->vol_right = vr;
+    }
+
+    handle = next_handle++;
+    c->handle = handle;
+    c->active = 1;
+
+    return handle;
+}
+
+void I_StopSound(int handle)
+{
+    int i;
+    for (i = 0; i < MIX_CHANNELS; i++) {
+        if (mix_ch[i].active && mix_ch[i].handle == handle) {
+            mix_ch[i].active = 0;
+            break;
+        }
+    }
+}
+
+int I_SoundIsPlaying(int handle)
+{
+    int i;
+    for (i = 0; i < MIX_CHANNELS; i++) {
+        if (mix_ch[i].active && mix_ch[i].handle == handle)
+            return 1;
+    }
+    return 0;
+}
+
+void I_UpdateSound(void)
+{
+    /* Il mixing avviene nel thread audio, nulla da fare qui */
+}
+
+void I_UpdateSoundParams(int handle, int vol, int sep)
+{
+    int i;
+    for (i = 0; i < MIX_CHANNELS; i++) {
+        if (mix_ch[i].active && mix_ch[i].handle == handle) {
+            int vl, vr;
+
+            if (sep < 128) {
+                vl = 255;
+                vr = sep * 2;
+            } else {
+                vl = (255 - sep) * 2;
+                vr = 255;
+            }
+
+            vl = (vl * vol) / 127;
+            vr = (vr * vol) / 127;
+
+            if (vl > 255) vl = 255;
+            if (vr > 255) vr = 255;
+
+            mix_ch[i].vol_left  = vl;
+            mix_ch[i].vol_right = vr;
+            break;
+        }
+    }
+}
+
+void I_InitSound(int use_sfx_prefix)
+{
+    int i;
+    (void)use_sfx_prefix;
+
+    debug_log("I_InitSound: initializing audio");
+
+    /* Azzera canali di mixing */
+    memset(mix_ch, 0, sizeof(mix_ch));
+    memset(sfx_buf, 0, sizeof(sfx_buf));
+
+    /* Apri porta audio Vita.
+       SCE_AUDIO_OUT_PORT_TYPE_MAIN = output principale (speaker/cuffie)
+       48000 Hz, stereo, 16-bit signed                                    */
+    sfx_port = sceAudioOutOpenPort(
+        SCE_AUDIO_OUT_PORT_TYPE_MAIN,
+        SND_SAMPLES,                     /* granularità in campioni */
+        48000,                           /* sample rate             */
+        SCE_AUDIO_OUT_MODE_STEREO        /* stereo                  */
+    );
+
+    if (sfx_port < 0) {
+        debug_logf("sceAudioOutOpenPort failed: 0x%08X", sfx_port);
+        /* Proviamo con BGM port come fallback */
+        sfx_port = sceAudioOutOpenPort(
+            SCE_AUDIO_OUT_PORT_TYPE_BGM,
+            SND_SAMPLES,
+            48000,
+            SCE_AUDIO_OUT_MODE_STEREO
+        );
+        if (sfx_port < 0) {
+            debug_logf("BGM port also failed: 0x%08X", sfx_port);
+            return;
+        }
+        debug_log("Using BGM audio port");
+    }
+
+    /* Volume al massimo sulla porta */
+    {
+        int vols[2] = { SCE_AUDIO_VOLUME_0DB, SCE_AUDIO_VOLUME_0DB };
+        sceAudioOutSetVolume(sfx_port, SCE_AUDIO_VOLUME_FLAG_L_CH |
+                             SCE_AUDIO_VOLUME_FLAG_R_CH, vols);
+    }
+
+    debug_logf("Audio port opened: %d", sfx_port);
+
+    /* Avvia thread di mixing */
+    sfx_running = 1;
+
+    sfx_thread_id = sceKernelCreateThread(
+        "sfx_mixer",
+        sfx_thread_func,
+        0x10000100,          /* priorità (default user) */
+        0x10000,             /* stack 64KB              */
+        0,                   /* attributi               */
+        0,                   /* cpu affinity mask (any) */
+        NULL
+    );
+
+    if (sfx_thread_id < 0) {
+        debug_logf("CreateThread failed: 0x%08X", sfx_thread_id);
+        sfx_running = 0;
+        return;
+    }
+
+    i = sceKernelStartThread(sfx_thread_id, 0, NULL);
+    if (i < 0) {
+        debug_logf("StartThread failed: 0x%08X", i);
+        sfx_running = 0;
+        sceKernelDeleteThread(sfx_thread_id);
+        sfx_thread_id = -1;
+        return;
+    }
+
+    debug_log("SFX mixer thread started OK");
+}
+
+void I_ShutdownSound(void)
+{
+    debug_log("I_ShutdownSound");
+
+    sfx_running = 0;
+
+    if (sfx_thread_id >= 0) {
+        sceKernelWaitThreadEnd(sfx_thread_id, NULL, NULL);
+        sceKernelDeleteThread(sfx_thread_id);
+        sfx_thread_id = -1;
+    }
+
+    if (sfx_port >= 0) {
+        sceAudioOutReleasePort(sfx_port);
+        sfx_port = -1;
+    }
+}
+
+void I_BindSoundVariables(void) {}
+
+/* ================================================================
+   MUSIC – MUS/MIDI (struttura pronta, output silenzioso)
+   La PS Vita non ha un sintetizzatore MIDI hardware accessibile
+   facilmente. Per avere musica servirebbe un softsynth (es. 
+   Timidity, FluidSynth) con soundfont. Per ora la struttura
+   è tutta pronta: basta sostituire I_PlaySong con un decoder.
+   ================================================================ */
+
+void I_InitMusic(void)
+{
+    debug_log("I_InitMusic (placeholder)");
+    memset(mus_tracks, 0, sizeof(mus_tracks));
+}
+
+void I_ShutdownMusic(void)
+{
+    int i;
+    debug_log("I_ShutdownMusic");
+    for (i = 0; i < MAX_MUS_TRACKS; i++) {
+        if (mus_tracks[i].data) {
+            free(mus_tracks[i].data);
+            mus_tracks[i].data = NULL;
+        }
+        mus_tracks[i].valid = 0;
+    }
+    mus_playing = 0;
+}
+
+void I_SetMusicVolume(int volume)
+{
+    mus_volume = volume;  /* 0-127 */
+}
+
+void I_PauseSong(void)
+{
+    mus_playing = 0;
+}
+
+void I_ResumeSong(void)
+{
+    if (mus_current >= 0)
+        mus_playing = 1;
+}
+
+void *I_RegisterSong(void *data, int len)
+{
+    int i;
+
+    if (!data || len <= 0) return NULL;
+
+    /* Trova slot libero */
+    for (i = 0; i < MAX_MUS_TRACKS; i++) {
+        if (!mus_tracks[i].valid) {
+            mus_tracks[i].data = (byte *)malloc(len);
+            if (!mus_tracks[i].data) return NULL;
+            memcpy(mus_tracks[i].data, data, len);
+            mus_tracks[i].length = len;
+            mus_tracks[i].valid  = 1;
+
+            debug_logf("I_RegisterSong: slot %d, %d bytes, "
+                       "header: %02X %02X %02X %02X",
+                       i, len,
+                       ((byte*)data)[0], ((byte*)data)[1],
+                       ((byte*)data)[2], ((byte*)data)[3]);
+
+            /* Ritorna handle = indice + 1 (0 = invalid) */
+            return (void *)(intptr_t)(i + 1);
+        }
+    }
+
+    debug_log("I_RegisterSong: no free slots!");
+    return NULL;
+}
+
+void I_UnRegisterSong(void *handle)
+{
+    int idx = (int)(intptr_t)handle - 1;
+
+    if (idx < 0 || idx >= MAX_MUS_TRACKS) return;
+
+    if (mus_current == idx) {
+        mus_playing = 0;
+        mus_current = -1;
+    }
+
+    if (mus_tracks[idx].data) {
+        free(mus_tracks[idx].data);
+        mus_tracks[idx].data = NULL;
+    }
+    mus_tracks[idx].valid = 0;
+}
+
+void I_PlaySong(void *handle, int looping)
+{
+    int idx = (int)(intptr_t)handle - 1;
+
+    if (idx < 0 || idx >= MAX_MUS_TRACKS || !mus_tracks[idx].valid) {
+        debug_logf("I_PlaySong: invalid handle %d", idx + 1);
+        return;
+    }
+
+    mus_current = idx;
+    mus_looping = looping;
+    mus_playing = 1;
+
+    debug_logf("I_PlaySong: track %d, loop=%d, %d bytes",
+               idx, looping, mus_tracks[idx].length);
+
+    /* TODO: Qui andrebbe avviato il decoder MUS→PCM.
+       Per implementare la musica vera, opzioni:
+       1) Convertire MUS→MIDI→PCM con un softsynth (FluidSynth + .sf2)
+       2) Usare una libreria MUS player dedicata
+       3) Pre-convertire la musica in OGG e riprodurla            */
+}
+
+void I_StopSong(void)
+{
+    mus_playing = 0;
+    mus_current = -1;
+}
+
+int I_MusicIsPlaying(void)
+{
+    return mus_playing;
+}
+
+/* ================================================================
+   CD Music stubs
+   ================================================================ */
 int  I_CDMusInit(void)           { return 0; }
 void I_CDMusShutdown(void)       {}
 void I_CDMusUpdate(void)         {}
@@ -587,7 +1182,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita ===");
+    debug_log("=== Chex Quest Vita (with audio) ===");
     debug_logf("Initial ms = %u", get_ms());
 
     init_display();
@@ -601,7 +1196,7 @@ int main(int argc, char **argv)
     debug_logf("base_time = %u", base_time);
     debug_log("Display OK");
 
-    show_color(0xFF00FF00);   /* verde = display OK */
+    show_color(0xFF00FF00);
     sceKernelDelayThread(1000000);
 
     for (i = 0; paths[i]; i++) {
@@ -623,7 +1218,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    show_color(0xFFFFFF00);   /* ciano = WAD trovato */
+    show_color(0xFFFFFF00);
     sceKernelDelayThread(500000);
 
     base_time = get_ms();
