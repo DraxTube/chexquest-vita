@@ -41,12 +41,13 @@ jobs:
           rm -rf doomgeneric
           git clone --depth 1 https://github.com/ozkl/doomgeneric.git
 
-            - name: Download Nuked OPL3
+      - name: Download Nuked OPL3
         run: |
           curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.c \
             -o doomgeneric/doomgeneric/opl3.c
           curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.h \
             -o doomgeneric/doomgeneric/opl3.h
+          echo "OPL3 header first line:"
           head -1 doomgeneric/doomgeneric/opl3.h
 
       - name: Copy vita source
