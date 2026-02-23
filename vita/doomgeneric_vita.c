@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – AUDIO + MUSICA + COMANDI */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – AUDIO + MUSICA FM + COMANDI */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -44,10 +44,6 @@ extern void D_PostEvent(event_t *ev);
 #define AUDIO_RATE        48000
 #define AUDIO_GRANULARITY 256
 #define MIX_CHANNELS      8
-
-/* Musica MUS defines */
-#define MUS_CHANNELS      16
-#define MUS_MAX_VOICES    32
 
 /* ================================================================
    Globals richiesti dal motore
@@ -168,8 +164,7 @@ static SceCtrlData pad_prev;
 static int input_init = 0;
 static int analog_held[6];
 
-/* Weapon cycling state */
-static int current_weapon = 1;  /* 1-7 */
+static int current_weapon = 1;
 static int weapon_cycle_cooldown = 0;
 
 static void kq_push(int p, unsigned char k)
@@ -210,38 +205,17 @@ static void do_poll_input(void)
 
     if (weapon_cycle_cooldown > 0) weapon_cycle_cooldown--;
 
-    /*
-     * Layout comandi PS Vita:
-     *
-     * D-Pad Su/Giu     = Avanti/Indietro
-     * D-Pad Sx/Dx      = Ruota sinistra/destra
-     * Left Stick Y     = Avanti/Indietro
-     * Left Stick X     = Strafe sinistra/destra
-     * Right Stick X    = Ruota sinistra/destra
-     * Cross (X)        = Usa/Apri porte
-     * Square           = Spara
-     * Circle           = Strafe modifier (tieni premuto + frecce = strafe)
-     * Triangle         = Mappa automap
-     * R Trigger        = Spara (alternativo)
-     * L Trigger        = Corri (run)
-     * Start            = Menu/Escape
-     * Select           = Conferma/Enter
-     *
-     * Cambio armi:
-     *   L Trigger + D-Pad Su    = Arma successiva
-     *   L Trigger + D-Pad Giu   = Arma precedente
-     *   Touch front (fascia alta) = Armi 1-7 direttamente
-     */
+    /* Pulsanti principali (non D-Pad) */
     {
         struct { unsigned btn; unsigned char key; } bm[] = {
-            { SCE_CTRL_CROSS,    KEY_USE        },  /* Usa/Apri */
-            { SCE_CTRL_SQUARE,   KEY_FIRE       },  /* Spara */
-            { SCE_CTRL_CIRCLE,   KEY_RALT       },  /* Strafe modifier */
-            { SCE_CTRL_TRIANGLE, KEY_TAB        },  /* Automap */
-            { SCE_CTRL_RTRIGGER, KEY_FIRE       },  /* Spara alternativo */
-            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },  /* Corri */
-            { SCE_CTRL_START,    KEY_ESCAPE     },  /* Menu */
-            { SCE_CTRL_SELECT,   KEY_ENTER      },  /* Conferma */
+            { SCE_CTRL_CROSS,    KEY_USE        },
+            { SCE_CTRL_SQUARE,   KEY_FIRE       },
+            { SCE_CTRL_CIRCLE,   KEY_RALT       },
+            { SCE_CTRL_TRIANGLE, KEY_TAB        },
+            { SCE_CTRL_RTRIGGER, KEY_FIRE       },
+            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },
+            { SCE_CTRL_START,    KEY_ESCAPE     },
+            { SCE_CTRL_SELECT,   KEY_ENTER      },
             { 0, 0 }
         };
         for (i = 0; bm[i].btn; i++) {
@@ -252,16 +226,19 @@ static void do_poll_input(void)
         }
     }
 
-    /* D-Pad: se L trigger e' premuto -> cambio armi, altrimenti movimento */
+    /* D-Pad: se L trigger premuto -> cambio armi, altrimenti movimento */
     {
         int ltrig = (pad.buttons & SCE_CTRL_LTRIGGER) != 0;
 
         if (ltrig && weapon_cycle_cooldown == 0) {
-            /* L + D-Pad Su = arma successiva */
             int up_now  = (pad.buttons & SCE_CTRL_UP) != 0;
             int up_was  = (pad_prev.buttons & SCE_CTRL_UP) != 0;
             int dn_now  = (pad.buttons & SCE_CTRL_DOWN) != 0;
             int dn_was  = (pad_prev.buttons & SCE_CTRL_DOWN) != 0;
+            int lf_now  = (pad.buttons & SCE_CTRL_LEFT) != 0;
+            int lf_was  = (pad_prev.buttons & SCE_CTRL_LEFT) != 0;
+            int rt_now  = (pad.buttons & SCE_CTRL_RIGHT) != 0;
+            int rt_was  = (pad_prev.buttons & SCE_CTRL_RIGHT) != 0;
 
             if (up_now && !up_was) {
                 current_weapon++;
@@ -277,31 +254,21 @@ static void do_poll_input(void)
                 kq_push(0, '0' + current_weapon);
                 weapon_cycle_cooldown = 5;
             }
-
-            /* L + D-Pad Sx/Dx = arma precedente/successiva (alternativo) */
-            {
-                int lf_now = (pad.buttons & SCE_CTRL_LEFT) != 0;
-                int lf_was = (pad_prev.buttons & SCE_CTRL_LEFT) != 0;
-                int rt_now = (pad.buttons & SCE_CTRL_RIGHT) != 0;
-                int rt_was = (pad_prev.buttons & SCE_CTRL_RIGHT) != 0;
-
-                if (lf_now && !lf_was) {
-                    current_weapon--;
-                    if (current_weapon < 1) current_weapon = 7;
-                    kq_push(1, '0' + current_weapon);
-                    kq_push(0, '0' + current_weapon);
-                    weapon_cycle_cooldown = 5;
-                }
-                if (rt_now && !rt_was) {
-                    current_weapon++;
-                    if (current_weapon > 7) current_weapon = 1;
-                    kq_push(1, '0' + current_weapon);
-                    kq_push(0, '0' + current_weapon);
-                    weapon_cycle_cooldown = 5;
-                }
+            if (lf_now && !lf_was) {
+                current_weapon--;
+                if (current_weapon < 1) current_weapon = 7;
+                kq_push(1, '0' + current_weapon);
+                kq_push(0, '0' + current_weapon);
+                weapon_cycle_cooldown = 5;
+            }
+            if (rt_now && !rt_was) {
+                current_weapon++;
+                if (current_weapon > 7) current_weapon = 1;
+                kq_push(1, '0' + current_weapon);
+                kq_push(0, '0' + current_weapon);
+                weapon_cycle_cooldown = 5;
             }
         } else if (!ltrig) {
-            /* D-Pad normale = movimento */
             struct { unsigned btn; unsigned char key; } dpad[] = {
                 { SCE_CTRL_UP,    KEY_UPARROW   },
                 { SCE_CTRL_DOWN,  KEY_DOWNARROW  },
@@ -319,12 +286,10 @@ static void do_poll_input(void)
     }
 
     /* Analog sticks */
-    /* Left stick: Y = avanti/indietro, X = strafe */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
                 &analog_held[2], &analog_held[3]);
-    /* Right stick: X = ruota */
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
@@ -345,16 +310,16 @@ static void do_poll_input(void)
 }
 
 /* ================================================================
-   AUDIO ENGINE — SFX con mutex e doppio buffer
+   AUDIO ENGINE — SFX
    ================================================================ */
 
 typedef struct {
     const byte *data;
     int         length;
-    int         pos_fixed;    /* 16.16 fixed point */
-    int         step_fixed;   /* 16.16 fixed point */
-    int         vol_left;     /* 0-256 */
-    int         vol_right;    /* 0-256 */
+    int         pos_fixed;
+    int         step_fixed;
+    int         vol_left;
+    int         vol_right;
     int         handle;
     int         active;
     int         lumpnum;
@@ -447,71 +412,317 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 }
 
 /* ================================================================
-   MUSICA MUS — Player completo
+   MUSICA MUS — Player con synth FM pseudo-OPL
    ================================================================ */
 
-/* MUS file format structures */
-#define MUS_ID        0x1A53554D  /* "MUS\x1A" */
-#define MUS_EVENT_RELEASE     0
-#define MUS_EVENT_PRESS       1
-#define MUS_EVENT_PITCHBEND   2
-#define MUS_EVENT_CONTROLLER  3
-#define MUS_EVENT_END         6
-#define MUS_EVENT_SCORE_END   5
+#define MUS_CHANNELS      16
+#define MUS_MAX_VOICES    32
 
-/* OPL-like FM synth simulation via simple additive sine waves */
+#define INST_DEFAULT      0
+#define INST_BASS         1
+#define INST_LEAD         2
+#define INST_PAD          3
+#define INST_BRASS        4
+#define INST_STRING       5
+#define INST_ORGAN        6
+#define INST_GUITAR       7
+#define INST_PERC_KICK    100
+#define INST_PERC_SNARE   101
+#define INST_PERC_HIHAT   102
+#define INST_PERC_TOM     103
+#define INST_PERC_CYMBAL  104
 
 typedef struct {
     int   active;
-    int   note;          /* MIDI note 0-127 */
-    int   volume;        /* 0-127 */
-    int   channel;       /* MUS channel */
-    int   phase_acc;     /* phase accumulator, fixed 16.16 */
-    int   phase_step;    /* frequency step, fixed 16.16 */
-    int   env_level;     /* envelope 0-256 */
-    int   env_state;     /* 0=attack 1=sustain 2=release 3=off */
+    int   note;
+    int   volume;
+    int   channel;
+    int   inst_type;
+
+    int   phase_acc;
+    int   phase_step;
+
+    int   mod_phase;
+    int   mod_step;
+    int   mod_depth;
+
+    int   env_level;
+    int   env_state;
     int   env_counter;
+
+    int   attack_rate;
+    int   decay_rate;
+    int   sustain_level;
+    int   release_rate;
+
+    int   vib_phase;
+    int   vib_speed;
+    int   vib_depth;
+
+    unsigned int noise_state;
+    int   noise_decay;
 } mus_voice_t;
 
 typedef struct {
-    int volume;    /* 0-127 per channel */
-    int patch;     /* instrument */
+    int volume;
+    int patch;
 } mus_chan_t;
 
 typedef struct {
     const byte *data;
     int         data_len;
-    int         pos;           /* current read position in MUS data */
+    int         pos;
     int         score_start;
     int         score_len;
     int         playing;
     int         looping;
-    int         delay_left;    /* ticks remaining before next event */
+    int         delay_left;
 
     mus_voice_t voices[MUS_MAX_VOICES];
     mus_chan_t   channels[MUS_CHANNELS];
 
-    int         tick_samples;  /* samples per MUS tick at 48kHz */
-    int         tick_counter;  /* samples until next tick */
-
-    int         mus_volume;    /* 0-15 master music volume */
+    int         tick_samples;
+    int         tick_counter;
+    int         mus_volume;
 } mus_player_t;
 
 static mus_player_t mus_player;
 static SceUID       mus_mutex = -1;
 
-/* Note frequency table (MIDI note -> Hz * 65536 / 48000) */
+/* Waveform tables */
+static int8_t wave_sine[256];
+static int8_t wave_square[256];
+static int8_t wave_saw[256];
+static int8_t wave_tri[256];
+
 static int mus_note_step[128];
 
 static void mus_init_tables(void)
 {
     int i;
+
     for (i = 0; i < 128; i++) {
-        /* freq = 440 * 2^((i-69)/12) */
         double freq = 440.0 * pow(2.0, (i - 69) / 12.0);
-        /* phase step for 48kHz output, 16.16 fixed point
-           step = freq / 48000 * 65536 */
         mus_note_step[i] = (int)(freq * 65536.0 / (double)AUDIO_RATE);
+    }
+
+    for (i = 0; i < 256; i++) {
+        wave_sine[i] = (int8_t)(127.0 * sin(2.0 * 3.14159265358979 * i / 256.0));
+    }
+
+    for (i = 0; i < 256; i++) {
+        if (i < 8)         wave_square[i] = (int8_t)(127 * i / 8);
+        else if (i < 120)  wave_square[i] = 127;
+        else if (i < 136)  wave_square[i] = (int8_t)(127 - 254 * (i - 120) / 16);
+        else if (i < 248)  wave_square[i] = -127;
+        else               wave_square[i] = (int8_t)(-127 + 127 * (i - 248) / 8);
+    }
+
+    for (i = 0; i < 256; i++) {
+        wave_saw[i] = (int8_t)(127 - (254 * i / 255));
+    }
+
+    for (i = 0; i < 256; i++) {
+        if (i < 64)       wave_tri[i] = (int8_t)(127 * i / 64);
+        else if (i < 192) wave_tri[i] = (int8_t)(127 - 254 * (i - 64) / 128);
+        else              wave_tri[i] = (int8_t)(-127 + 127 * (i - 192) / 64);
+    }
+}
+
+static void mus_init_sine(void)
+{
+    /* Done in mus_init_tables */
+}
+
+static int patch_to_inst(int patch)
+{
+    if (patch < 0)   return INST_DEFAULT;
+    if (patch <=  7) return INST_DEFAULT;
+    if (patch <= 15) return INST_DEFAULT;
+    if (patch <= 23) return INST_ORGAN;
+    if (patch <= 31) return INST_GUITAR;
+    if (patch <= 39) return INST_BASS;
+    if (patch <= 47) return INST_STRING;
+    if (patch <= 55) return INST_STRING;
+    if (patch <= 63) return INST_BRASS;
+    if (patch <= 71) return INST_LEAD;
+    if (patch <= 79) return INST_LEAD;
+    if (patch <= 87) return INST_LEAD;
+    if (patch <= 95) return INST_PAD;
+    if (patch <= 103) return INST_PAD;
+    if (patch <= 111) return INST_STRING;
+    if (patch <= 119) return INST_DEFAULT;
+    return INST_DEFAULT;
+}
+
+static int perc_note_to_inst(int note)
+{
+    if (note == 35 || note == 36) return INST_PERC_KICK;
+    if (note == 38 || note == 40) return INST_PERC_SNARE;
+    if (note == 42 || note == 44 || note == 46) return INST_PERC_HIHAT;
+    if (note >= 41 && note <= 48) return INST_PERC_TOM;
+    if (note >= 49 && note <= 57) return INST_PERC_CYMBAL;
+    return INST_PERC_HIHAT;
+}
+
+static void setup_voice_inst(mus_voice_t *v, int inst_type)
+{
+    v->inst_type = inst_type;
+    v->vib_phase = 0;
+    v->noise_state = 0;
+    v->noise_decay = 0;
+
+    switch (inst_type) {
+    case INST_BASS:
+        v->mod_step      = v->phase_step * 1;
+        v->mod_depth     = 180;
+        v->attack_rate   = 8;
+        v->decay_rate    = 3;
+        v->sustain_level = 200;
+        v->release_rate  = 6;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_LEAD:
+        v->mod_step      = v->phase_step * 2;
+        v->mod_depth     = 120;
+        v->attack_rate   = 12;
+        v->decay_rate    = 2;
+        v->sustain_level = 180;
+        v->release_rate  = 4;
+        v->vib_speed     = 300;
+        v->vib_depth     = 3;
+        break;
+
+    case INST_PAD:
+        v->mod_step      = v->phase_step * 3;
+        v->mod_depth     = 60;
+        v->attack_rate   = 2;
+        v->decay_rate    = 1;
+        v->sustain_level = 220;
+        v->release_rate  = 1;
+        v->vib_speed     = 200;
+        v->vib_depth     = 5;
+        break;
+
+    case INST_BRASS:
+        v->mod_step      = v->phase_step * 1;
+        v->mod_depth     = 200;
+        v->attack_rate   = 10;
+        v->decay_rate    = 3;
+        v->sustain_level = 190;
+        v->release_rate  = 5;
+        v->vib_speed     = 400;
+        v->vib_depth     = 2;
+        break;
+
+    case INST_STRING:
+        v->mod_step      = v->phase_step * 2;
+        v->mod_depth     = 40;
+        v->attack_rate   = 3;
+        v->decay_rate    = 1;
+        v->sustain_level = 210;
+        v->release_rate  = 2;
+        v->vib_speed     = 250;
+        v->vib_depth     = 4;
+        break;
+
+    case INST_ORGAN:
+        v->mod_step      = v->phase_step * 1;
+        v->mod_depth     = 80;
+        v->attack_rate   = 20;
+        v->decay_rate    = 1;
+        v->sustain_level = 240;
+        v->release_rate  = 8;
+        v->vib_speed     = 350;
+        v->vib_depth     = 2;
+        break;
+
+    case INST_GUITAR:
+        v->mod_step      = v->phase_step * 3;
+        v->mod_depth     = 150;
+        v->attack_rate   = 20;
+        v->decay_rate    = 4;
+        v->sustain_level = 140;
+        v->release_rate  = 5;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_PERC_KICK:
+        v->mod_step      = v->phase_step / 2;
+        v->mod_depth     = 255;
+        v->attack_rate   = 32;
+        v->decay_rate    = 8;
+        v->sustain_level = 0;
+        v->release_rate  = 8;
+        v->noise_state   = 12345;
+        v->noise_decay   = 256;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_PERC_SNARE:
+        v->mod_step      = v->phase_step * 7;
+        v->mod_depth     = 255;
+        v->attack_rate   = 32;
+        v->decay_rate    = 6;
+        v->sustain_level = 0;
+        v->release_rate  = 6;
+        v->noise_state   = 67890;
+        v->noise_decay   = 256;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_PERC_HIHAT:
+        v->mod_step      = v->phase_step * 13;
+        v->mod_depth     = 200;
+        v->attack_rate   = 32;
+        v->decay_rate    = 10;
+        v->sustain_level = 0;
+        v->release_rate  = 10;
+        v->noise_state   = 11111;
+        v->noise_decay   = 256;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_PERC_TOM:
+        v->mod_step      = v->phase_step * 2;
+        v->mod_depth     = 200;
+        v->attack_rate   = 32;
+        v->decay_rate    = 5;
+        v->sustain_level = 0;
+        v->release_rate  = 5;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    case INST_PERC_CYMBAL:
+        v->mod_step      = v->phase_step * 11;
+        v->mod_depth     = 180;
+        v->attack_rate   = 32;
+        v->decay_rate    = 2;
+        v->sustain_level = 60;
+        v->release_rate  = 2;
+        v->noise_state   = 33333;
+        v->noise_decay   = 256;
+        v->vib_speed     = 0;
+        v->vib_depth     = 0;
+        break;
+
+    default:
+        v->mod_step      = v->phase_step * 2;
+        v->mod_depth     = 100;
+        v->attack_rate   = 10;
+        v->decay_rate    = 3;
+        v->sustain_level = 180;
+        v->release_rate  = 4;
+        v->vib_speed     = 250;
+        v->vib_depth     = 2;
+        break;
     }
 }
 
@@ -522,9 +733,8 @@ static int mus_find_free_voice(void)
         if (!mus_player.voices[i].active)
             return i;
     }
-    /* Steal oldest in release state, or first */
     for (i = 0; i < MUS_MAX_VOICES; i++) {
-        if (mus_player.voices[i].env_state >= 2)
+        if (mus_player.voices[i].env_state >= 3)
             return i;
     }
     return 0;
@@ -532,23 +742,41 @@ static int mus_find_free_voice(void)
 
 static void mus_note_on(int channel, int note, int volume)
 {
-    int vi;
+    int vi, inst;
     mus_voice_t *v;
 
     if (note < 0 || note > 127) return;
 
     vi = mus_find_free_voice();
     v = &mus_player.voices[vi];
+    memset(v, 0, sizeof(*v));
 
     v->active     = 1;
     v->note       = note;
     v->channel    = channel;
     v->volume     = (volume >= 0) ? volume : mus_player.channels[channel].volume;
     v->phase_acc  = 0;
-    v->phase_step = mus_note_step[note];
+    v->mod_phase  = 0;
     v->env_level  = 0;
-    v->env_state  = 0;   /* attack */
+    v->env_state  = 0;
     v->env_counter = 0;
+
+    if (channel == 15) {
+        inst = perc_note_to_inst(note);
+        switch (inst) {
+        case INST_PERC_KICK:   v->phase_step = mus_note_step[36]; break;
+        case INST_PERC_SNARE:  v->phase_step = mus_note_step[60]; break;
+        case INST_PERC_HIHAT:  v->phase_step = mus_note_step[80]; break;
+        case INST_PERC_TOM:    v->phase_step = mus_note_step[note < 128 ? note : 48]; break;
+        case INST_PERC_CYMBAL: v->phase_step = mus_note_step[75]; break;
+        default:               v->phase_step = mus_note_step[60]; break;
+        }
+    } else {
+        v->phase_step = mus_note_step[note];
+        inst = patch_to_inst(mus_player.channels[channel].patch);
+    }
+
+    setup_voice_inst(v, inst);
 }
 
 static void mus_note_off(int channel, int note)
@@ -557,8 +785,10 @@ static void mus_note_off(int channel, int note)
     for (i = 0; i < MUS_MAX_VOICES; i++) {
         mus_voice_t *v = &mus_player.voices[i];
         if (v->active && v->channel == channel && v->note == note) {
-            v->env_state = 2;  /* release */
-            v->env_counter = 0;
+            if (v->env_state < 3) {
+                v->env_state = 3;
+                v->env_counter = 0;
+            }
         }
     }
 }
@@ -568,7 +798,7 @@ static void mus_all_notes_off(int channel)
     int i;
     for (i = 0; i < MUS_MAX_VOICES; i++) {
         if (mus_player.voices[i].channel == channel) {
-            mus_player.voices[i].env_state = 2;
+            mus_player.voices[i].env_state = 3;
             mus_player.voices[i].env_counter = 0;
         }
     }
@@ -584,13 +814,12 @@ static byte mus_read_byte(void)
 static void mus_process_event(void)
 {
     byte event_byte, channel, event_type;
-    int  last;
+    int  last, i;
 
     if (!mus_player.playing) return;
     if (mus_player.pos >= mus_player.score_start + mus_player.score_len) {
         if (mus_player.looping) {
             mus_player.pos = mus_player.score_start;
-            int i;
             for (i = 0; i < MUS_MAX_VOICES; i++)
                 mus_player.voices[i].active = 0;
         } else {
@@ -605,12 +834,12 @@ static void mus_process_event(void)
     last       = event_byte & 0x80;
 
     switch (event_type) {
-    case MUS_EVENT_RELEASE: {
+    case 0: {
         byte note = mus_read_byte();
         mus_note_off(channel, note & 0x7F);
         break;
     }
-    case MUS_EVENT_PRESS: {
+    case 1: {
         byte note_byte = mus_read_byte();
         int  note = note_byte & 0x7F;
         int  vol = -1;
@@ -621,31 +850,39 @@ static void mus_process_event(void)
         mus_note_on(channel, note, vol);
         break;
     }
-    case MUS_EVENT_PITCHBEND: {
-        mus_read_byte(); /* pitch value, ignored for now */
+    case 2: {
+        mus_read_byte();
         break;
     }
-    case MUS_EVENT_CONTROLLER: {
-        byte ctrl = mus_read_byte();
-        byte val  = mus_read_byte();
-        if (ctrl == 3) {
-            mus_player.channels[channel].volume = val & 0x7F;
-        } else if (ctrl == 4) {
-            /* pan - ignored */
-        } else if (ctrl == 0) {
-            mus_player.channels[channel].patch = val;
+    case 3: {
+        byte sys = mus_read_byte();
+        if (sys == 10 || sys == 11 || sys == 14) {
+            mus_all_notes_off(channel);
         }
         break;
     }
-    case MUS_EVENT_SCORE_END:
-    case MUS_EVENT_END:
+    case 4: {
+        byte ctrl = mus_read_byte();
+        byte val  = mus_read_byte();
+        if (ctrl == 0) {
+            mus_player.channels[channel].patch = val;
+        } else if (ctrl == 3) {
+            mus_player.channels[channel].volume = val & 0x7F;
+            for (i = 0; i < MUS_MAX_VOICES; i++) {
+                if (mus_player.voices[i].active &&
+                    mus_player.voices[i].channel == channel) {
+                    mus_player.voices[i].volume = val & 0x7F;
+                }
+            }
+        }
+        break;
+    }
+    case 5:
+    case 6:
         if (mus_player.looping) {
             mus_player.pos = mus_player.score_start;
-            {
-                int i;
-                for (i = 0; i < MUS_MAX_VOICES; i++)
-                    mus_player.voices[i].active = 0;
-            }
+            for (i = 0; i < MUS_MAX_VOICES; i++)
+                mus_player.voices[i].active = 0;
         } else {
             mus_player.playing = 0;
         }
@@ -654,7 +891,6 @@ static void mus_process_event(void)
         break;
     }
 
-    /* Read delay if last bit set */
     if (last) {
         int delay = 0;
         byte db;
@@ -678,18 +914,7 @@ static void mus_tick(void)
         mus_player.delay_left--;
 }
 
-/* Sine table for music synth (256 entries, -127 to 127) */
-static int8_t mus_sine[256];
-
-static void mus_init_sine(void)
-{
-    int i;
-    for (i = 0; i < 256; i++) {
-        mus_sine[i] = (int8_t)(127.0 * sin(2.0 * 3.14159265358979 * i / 256.0));
-    }
-}
-
-/* Mix music into buffer (called under mutex) */
+/* FM synthesis mixing */
 static void mus_mix_into(int32_t *accum_buf, int nsamples)
 {
     int i, s;
@@ -701,68 +926,171 @@ static void mus_mix_into(int32_t *accum_buf, int nsamples)
     if (mvol <= 0) return;
 
     for (s = 0; s < nsamples; s++) {
-        /* Advance tick timer */
+        int32_t sample = 0;
+
         mus_player.tick_counter--;
         if (mus_player.tick_counter <= 0) {
             mus_player.tick_counter = mus_player.tick_samples;
             mus_tick();
         }
 
-        /* Mix all active voices */
-        {
-            int32_t sample = 0;
-            for (i = 0; i < MUS_MAX_VOICES; i++) {
-                mus_voice_t *v = &mus_player.voices[i];
-                int wave, out;
+        for (i = 0; i < MUS_MAX_VOICES; i++) {
+            mus_voice_t *v = &mus_player.voices[i];
+            int mod_out, carrier_idx, carrier_out;
+            int out, chan_vol;
 
-                if (!v->active) continue;
+            if (!v->active) continue;
 
-                /* Simple envelope */
-                switch (v->env_state) {
-                case 0: /* attack */
-                    v->env_level += 16;
-                    if (v->env_level >= 256) {
-                        v->env_level = 256;
-                        v->env_state = 1;
-                    }
-                    break;
-                case 1: /* sustain */
-                    break;
-                case 2: /* release */
-                    v->env_level -= 4;
-                    if (v->env_level <= 0) {
-                        v->env_level = 0;
-                        v->env_state = 3;
-                        v->active = 0;
-                        continue;
-                    }
-                    break;
-                default:
+            /* ADSR Envelope */
+            switch (v->env_state) {
+            case 0:
+                v->env_level += v->attack_rate;
+                if (v->env_level >= 256) {
+                    v->env_level = 256;
+                    v->env_state = 1;
+                }
+                break;
+            case 1:
+                v->env_level -= v->decay_rate;
+                if (v->env_level <= v->sustain_level) {
+                    v->env_level = v->sustain_level;
+                    v->env_state = 2;
+                }
+                break;
+            case 2:
+                break;
+            case 3:
+                v->env_level -= v->release_rate;
+                if (v->env_level <= 0) {
+                    v->env_level = 0;
                     v->active = 0;
                     continue;
                 }
-
-                /* Waveform: use sine table + a bit of harmonics for richer sound */
-                {
-                    int idx = (v->phase_acc >> 8) & 0xFF;
-                    int idx2 = (v->phase_acc >> 7) & 0xFF; /* 2nd harmonic */
-                    wave = mus_sine[idx] * 3 + mus_sine[idx2];
-                    wave /= 4;
-                }
-
-                out = (wave * v->volume * v->env_level) >> 9;
-                sample += out;
-
-                v->phase_acc += v->phase_step;
+                break;
+            default:
+                v->active = 0;
+                continue;
             }
 
-            /* Apply music master volume */
-            sample = (sample * mvol) / 15;
+            chan_vol = mus_player.channels[v->channel].volume;
+            if (chan_vol <= 0) continue;
 
-            /* Add to accumulation buffer (stereo, both channels same) */
-            accum_buf[s * 2 + 0] += sample;
-            accum_buf[s * 2 + 1] += sample;
+            /* Percussion with noise */
+            if (v->inst_type >= 100 && v->noise_state) {
+                int noise;
+                int idx;
+
+                v->noise_state ^= (v->noise_state << 13);
+                v->noise_state ^= (v->noise_state >> 17);
+                v->noise_state ^= (v->noise_state << 5);
+
+                noise = (int)(v->noise_state & 0xFF) - 128;
+
+                idx = (v->phase_acc >> 8) & 0xFF;
+                mod_out = wave_sine[(v->mod_phase >> 8) & 0xFF];
+                carrier_idx = (idx + ((mod_out * v->mod_depth) >> 8)) & 0xFF;
+
+                if (v->inst_type == INST_PERC_KICK) {
+                    out = wave_sine[carrier_idx];
+                    out = (out * 3 + noise) / 4;
+                } else if (v->inst_type == INST_PERC_SNARE) {
+                    out = (noise * 3 + wave_sine[carrier_idx]) / 4;
+                } else if (v->inst_type == INST_PERC_HIHAT ||
+                           v->inst_type == INST_PERC_CYMBAL) {
+                    out = noise;
+                } else {
+                    out = (wave_sine[carrier_idx] + noise) / 2;
+                }
+
+                if (v->noise_decay > 0) {
+                    v->noise_decay -= 2;
+                    if (v->noise_decay < 0) v->noise_decay = 0;
+                }
+
+                out = (out * v->volume * v->env_level) >> 9;
+                out = (out * chan_vol) >> 7;
+
+                v->phase_acc += v->phase_step;
+                v->mod_phase += v->mod_step;
+
+                sample += out;
+                continue;
+            }
+
+            /* FM Synthesis for melodic instruments */
+            {
+                int effective_step = v->phase_step;
+
+                if (v->vib_depth > 0 && v->vib_speed > 0) {
+                    int vib_idx = (v->vib_phase >> 8) & 0xFF;
+                    int vib_mod = (wave_sine[vib_idx] * v->vib_depth) >> 7;
+                    effective_step += (v->phase_step * vib_mod) >> 10;
+                    v->vib_phase += v->vib_speed;
+                }
+
+                mod_out = wave_sine[(v->mod_phase >> 8) & 0xFF];
+
+                carrier_idx = ((v->phase_acc >> 8) +
+                              ((mod_out * v->mod_depth) >> 8)) & 0xFF;
+
+                switch (v->inst_type) {
+                case INST_ORGAN:
+                    carrier_out = wave_sine[carrier_idx] * 3;
+                    carrier_out += wave_sine[(carrier_idx * 2) & 0xFF] * 2;
+                    carrier_out += wave_sine[(carrier_idx * 4) & 0xFF];
+                    carrier_out /= 6;
+                    break;
+
+                case INST_GUITAR:
+                    carrier_out = (wave_saw[carrier_idx] * 2 +
+                                  wave_square[carrier_idx]) / 3;
+                    break;
+
+                case INST_BRASS:
+                    carrier_out = (wave_square[carrier_idx] * 2 +
+                                  wave_sine[carrier_idx]) / 3;
+                    break;
+
+                case INST_STRING:
+                    carrier_out = (wave_saw[carrier_idx] * 3 +
+                                  wave_sine[carrier_idx]) / 4;
+                    break;
+
+                case INST_BASS:
+                    carrier_out = (wave_tri[carrier_idx] * 2 +
+                                  wave_sine[carrier_idx]) / 3;
+                    break;
+
+                case INST_PAD:
+                    carrier_out = (wave_sine[carrier_idx] * 3 +
+                                  wave_tri[carrier_idx]) / 4;
+                    break;
+
+                case INST_LEAD:
+                    carrier_out = (wave_saw[carrier_idx] * 2 +
+                                  wave_square[carrier_idx] +
+                                  wave_sine[carrier_idx]) / 4;
+                    break;
+
+                default:
+                    carrier_out = wave_sine[carrier_idx];
+                    break;
+                }
+
+                out = (carrier_out * v->volume * v->env_level) >> 9;
+                out = (out * chan_vol) >> 7;
+
+                v->phase_acc += effective_step;
+                v->mod_phase += v->mod_step;
+
+                sample += out;
+            }
         }
+
+        sample = (sample * mvol) / 15;
+
+        accum_buf[s * 2 + 0] += sample;
+        accum_buf[s * 2 + 1] += sample;
     }
 }
 
@@ -775,7 +1103,6 @@ static void mix_into(int16_t *out, int nsamples)
     int32_t accum[AUDIO_GRANULARITY * 2];
     int     mvol;
 
-    /* Clear accumulator */
     memset(accum, 0, nsamples * 2 * sizeof(int32_t));
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
@@ -784,7 +1111,6 @@ static void mix_into(int16_t *out, int nsamples)
     if (mvol < 0)  mvol = 0;
     if (mvol > 15) mvol = 15;
 
-    /* Mix SFX */
     for (i = 0; i < nsamples; i++) {
         int32_t accum_l = 0, accum_r = 0;
 
@@ -817,14 +1143,12 @@ static void mix_into(int16_t *out, int nsamples)
 
     sceKernelUnlockMutex(sfx_mutex, 1);
 
-    /* Mix Music */
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
         mus_mix_into(accum, nsamples);
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 
-    /* Final clamp to int16 */
     for (i = 0; i < nsamples * 2; i++) {
         int32_t v = accum[i];
         if (v >  32767) v =  32767;
@@ -865,12 +1189,10 @@ static void start_audio_system(void)
     sfx_cache_count = 0;
     sfx_buf_idx = 0;
 
-    /* Init music tables */
     mus_init_tables();
     mus_init_sine();
     memset(&mus_player, 0, sizeof(mus_player));
     mus_player.mus_volume = 8;
-    /* MUS tick rate: ~140 ticks/second (DOOM standard) */
     mus_player.tick_samples = AUDIO_RATE / 140;
     mus_player.tick_counter = mus_player.tick_samples;
 
@@ -918,7 +1240,6 @@ static void start_audio_system(void)
         SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vols);
     debug_logf("SetVolume: 0x%08X", ret);
 
-    /* Test beep */
     {
         int t;
         int16_t *testbuf = sfx_buf[0];
@@ -968,7 +1289,7 @@ static void start_audio_system(void)
     }
 
     audio_ready = 1;
-    debug_log("Audio system fully initialized with music support!");
+    debug_log("Audio system fully initialized with FM music!");
 }
 
 /* ================================================================
@@ -1192,7 +1513,7 @@ void I_UpdateJoystick(void)     {}
 void I_BindJoystickVariables(void) {}
 
 /* ================================================================
-   SOUND – signatures matching i_sound.h exactly
+   SOUND
    ================================================================ */
 
 void I_SetChannels(void)
@@ -1265,7 +1586,6 @@ int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
 
-    /* Find free channel or steal oldest */
     best = 0;
     oldest_handle = 0x7FFFFFFF;
     for (i = 0; i < MIX_CHANNELS; i++) {
@@ -1424,7 +1744,7 @@ void I_ShutdownSound(void)
 void I_BindSoundVariables(void) {}
 
 /* ================================================================
-   MUSIC – MUS format player
+   MUSIC
    ================================================================ */
 void I_InitMusic(void)
 {
@@ -1492,6 +1812,7 @@ void *I_RegisterSong(void *data, int len)
     byte *d = (byte *)data;
     byte *mus_data;
     int   score_offset, score_len;
+    int   i;
 
     if (!data || len < 16) {
         debug_logf("I_RegisterSong: invalid data (len=%d)", len);
@@ -1501,22 +1822,11 @@ void *I_RegisterSong(void *data, int len)
     debug_logf("I_RegisterSong: %d bytes, hdr: %02X%02X%02X%02X",
                len, d[0], d[1], d[2], d[3]);
 
-    /* Check MUS header: "MUS\x1A" */
     if (d[0] != 'M' || d[1] != 'U' || d[2] != 'S' || d[3] != 0x1A) {
         debug_log("I_RegisterSong: not MUS format, ignoring");
-        return (void *)1;  /* Return non-null so engine doesn't crash */
+        return (void *)1;
     }
 
-    /* MUS header:
-       0-3:  "MUS\x1A"
-       4-5:  score length
-       6-7:  score start offset
-       8-9:  primary channels
-       10-11: secondary channels
-       12-13: number of instruments
-       14-15: reserved
-       16+:  instrument list, then score data
-    */
     score_len    = d[4] | (d[5] << 8);
     score_offset = d[6] | (d[7] << 8);
 
@@ -1531,7 +1841,6 @@ void *I_RegisterSong(void *data, int len)
 
     debug_logf("MUS: score_offset=%d score_len=%d", score_offset, score_len);
 
-    /* Copy data so it persists */
     mus_data = (byte *)malloc(len);
     if (!mus_data) {
         debug_log("I_RegisterSong: malloc failed");
@@ -1543,12 +1852,8 @@ void *I_RegisterSong(void *data, int len)
         sceKernelLockMutex(mus_mutex, 1, NULL);
     }
 
-    /* Stop any current song */
     mus_player.playing = 0;
     memset(mus_player.voices, 0, sizeof(mus_player.voices));
-
-    /* Free old data if we had any */
-    /* (We use a simple scheme: store pointer, free on re-register) */
 
     mus_player.data        = mus_data;
     mus_player.data_len    = len;
@@ -1558,13 +1863,9 @@ void *I_RegisterSong(void *data, int len)
     mus_player.delay_left  = 0;
     mus_player.tick_counter = mus_player.tick_samples;
 
-    /* Reset channel volumes */
-    {
-        int i;
-        for (i = 0; i < MUS_CHANNELS; i++) {
-            mus_player.channels[i].volume = 100;
-            mus_player.channels[i].patch  = 0;
-        }
+    for (i = 0; i < MUS_CHANNELS; i++) {
+        mus_player.channels[i].volume = 100;
+        mus_player.channels[i].patch  = 0;
     }
 
     if (mus_mutex >= 0) {
@@ -1675,7 +1976,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (audio + music + controls v5) ===");
+    debug_log("=== Chex Quest Vita (FM synth music v6) ===");
 
     init_display();
     if (!display_ready) {
