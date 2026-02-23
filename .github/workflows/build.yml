@@ -17,8 +17,7 @@ jobs:
 
       - name: Verify files exist
         run: |
-          for f in doomgeneric_vita.c CMakeLists.txt \
-                   sce_sys/livearea/contents/template.xml; do
+          for f in doomgeneric_vita.c CMakeLists.txt; do
             if [ ! -f "$f" ]; then
               echo "MANCANTE: $f"
               exit 1
@@ -59,7 +58,6 @@ jobs:
 
           mkdir -p sce_sys/livearea/contents
 
-          # Download immagini
           wget -q -O /tmp/chex_logo.jpg \
             "https://images.launchbox-app.com/098d8137-5376-4acd-a17d-521587a69ac9.jpg" || true
 
@@ -67,33 +65,62 @@ jobs:
             "https://static.wikia.nocookie.net/chexquest/images/b/b7/Chex-Quest-Logo.png/revision/latest?cb=20250226015616" \
             --max-redirect=5 --user-agent="Mozilla/5.0" || true
 
-          # icon0.png (128x128) - da logo wiki
           if [ -s /tmp/chex_wiki.png ]; then
             convert /tmp/chex_wiki.png -resize 128x128^ -gravity center -extent 128x128 -background '#1a5c2a' -flatten sce_sys/icon0.png
           else
             convert -size 128x128 xc:'#1a5c2a' -fill '#FFD700' -gravity center -font DejaVu-Sans-Bold -pointsize 28 -annotate +0-8 'CQ' -fill white -pointsize 11 -annotate +0+16 'CHEX QUEST' sce_sys/icon0.png
           fi
 
-          # bg.png (840x500) - da immagine launchbox
           if [ -s /tmp/chex_logo.jpg ]; then
             convert /tmp/chex_logo.jpg -resize 840x500^ -gravity center -extent 840x500 sce_sys/livearea/contents/bg.png
           else
             convert -size 840x500 'gradient:#0f3460-#1a5c2a' -fill white -gravity center -font DejaVu-Sans-Bold -pointsize 48 -annotate +0+0 'CHEX QUEST' sce_sys/livearea/contents/bg.png
           fi
 
-          # pic0.png (960x544) - da stessa immagine
           if [ -s /tmp/chex_logo.jpg ]; then
             convert /tmp/chex_logo.jpg -resize 960x544^ -gravity center -extent 960x544 sce_sys/pic0.png
           else
             convert -size 960x544 'gradient:#0a2a0a-#1a5c2a' -fill '#FFD700' -gravity center -font DejaVu-Sans-Bold -pointsize 72 -annotate +0+0 'CHEX QUEST' sce_sys/pic0.png
           fi
 
-          # startup.png (280x158)
           convert -size 280x158 xc:'#e94560' -fill white -gravity center -font DejaVu-Sans-Bold -pointsize 36 -annotate +0-8 'START' -fill '#FFD700' -pointsize 14 -annotate +0+22 'CHEX QUEST' sce_sys/livearea/contents/startup.png
 
-          echo "=== Assets ==="
+          echo "=== Assets generati ==="
           ls -la sce_sys/icon0.png sce_sys/pic0.png
           ls -la sce_sys/livearea/contents/
+
+      - name: Fix template and verify assets
+        run: |
+          mkdir -p sce_sys/livearea/contents
+
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<livearea style="a1" format-ver="01.00" content-rev="1">\n  <livearea-bg>\n    <image>bg.png</image>\n  </livearea-bg>\n  <gate>\n    <startup-image>startup.png</startup-image>\n  </gate>\n</livearea>\n' > sce_sys/livearea/contents/template.xml
+
+          if [ ! -s sce_sys/icon0.png ]; then
+            convert -size 128x128 xc:'#2E8B57' -depth 8 -type TrueColor sce_sys/icon0.png
+          fi
+          if [ ! -s sce_sys/pic0.png ]; then
+            convert -size 960x544 xc:'#1a1a2e' -depth 8 -type TrueColor sce_sys/pic0.png
+          fi
+          if [ ! -s sce_sys/livearea/contents/bg.png ]; then
+            convert -size 840x500 xc:'#0f3460' -depth 8 -type TrueColor sce_sys/livearea/contents/bg.png
+          fi
+          if [ ! -s sce_sys/livearea/contents/startup.png ]; then
+            convert -size 280x158 xc:'#e94560' -depth 8 -type TrueColor sce_sys/livearea/contents/startup.png
+          fi
+
+          echo "=== Verifica file ==="
+          for f in sce_sys/icon0.png sce_sys/pic0.png \
+                   sce_sys/livearea/contents/bg.png \
+                   sce_sys/livearea/contents/startup.png \
+                   sce_sys/livearea/contents/template.xml; do
+            if [ ! -s "$f" ]; then
+              echo "ERRORE: $f mancante!"
+              exit 1
+            fi
+            echo "OK: $f ($(wc -c < "$f") bytes)"
+          done
+
+          xxd -l 5 sce_sys/livearea/contents/template.xml
 
       - name: Build
         run: |
