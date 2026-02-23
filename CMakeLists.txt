@@ -72,12 +72,14 @@ add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${DG_DIR})
 
+# *** FIX PRINCIPALE: FEATURE_SOUND=1 ***
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     VITA=1
-    FEATURE_SOUND=0
+    FEATURE_SOUND=1
     DOOMGENERIC_RESX=320
     DOOMGENERIC_RESY=200
 )
+
 target_link_libraries(${PROJECT_NAME}
     SceDisplay_stub
     SceCtrl_stub
@@ -102,7 +104,6 @@ target_link_libraries(${PROJECT_NAME}
 
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
 
-# VPK senza icone - solo eboot e param.sfo
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
     VERSION ${VITA_VERSION}
     NAME ${VITA_APP_NAME}
