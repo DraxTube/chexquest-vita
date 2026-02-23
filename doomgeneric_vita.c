@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music Fixed */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music Fixed v9 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -361,7 +361,7 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 }
 
 /* ================================================================
-   OPL3 MUSIC ENGINE — GENMIDI corretto
+   OPL3 MUSIC ENGINE
    ================================================================ */
 
 #define GENMIDI_NUM_INSTRS   175
@@ -369,29 +369,14 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 #define GENMIDI_FLAG_FIXED   0x0001
 #define GENMIDI_FLAG_2VOICE  0x0004
 
-/*
- * Struttura GENMIDI CORRETTA — layout esatto come nel WAD di DOOM.
- *
- * Ogni operatore OPL2 nel GENMIDI e' 6 byte:
- *   offset 0: tremolo/vibrato/sustain/ksr/mult  (reg 0x20)
- *   offset 1: attack/decay                       (reg 0x60)
- *   offset 2: sustain/release                    (reg 0x80)
- *   offset 3: waveform select                    (reg 0xE0)
- *   offset 4: key scale level / output level     (reg 0x40)
- *   offset 5: feedback (solo per modulator) / unused per carrier
- *
- * Ogni voice e' 2 operatori (mod + car) + 2 byte note offset = 14 byte
- * Ogni instrument e' flags(2) + tuning(1) + fixed_note(1) + 2 voices = 30 byte
- */
-
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t tremolo;    /* 0x20: trem|vib|sus|ksr|mult */
-    uint8_t attack;     /* 0x60: attack|decay */
-    uint8_t sustain;    /* 0x80: sustain|release */
-    uint8_t waveform;   /* 0xE0: waveform select */
-    uint8_t level;      /* 0x40: KSL|output level */
-    uint8_t feedback;   /* 0xC0: feedback|connection (only meaningful for mod) */
+    uint8_t tremolo;
+    uint8_t attack;
+    uint8_t sustain;
+    uint8_t waveform;
+    uint8_t level;
+    uint8_t feedback;
 } genmidi_op_t;
 
 typedef struct {
@@ -408,15 +393,6 @@ typedef struct {
 } genmidi_instr_t;
 #pragma pack(pop)
 
-/*
- * OPL2 slot offset table.
- * Channels 0-8 use slots at these offsets for modulator:
- *   ch0: 0x00,0x03  ch1: 0x01,0x04  ch2: 0x02,0x05
- *   ch3: 0x08,0x0B  ch4: 0x09,0x0C  ch5: 0x0A,0x0D
- *   ch6: 0x10,0x13  ch7: 0x11,0x14  ch8: 0x12,0x15
- *
- * For a given channel, modulator slot offset and carrier slot offset:
- */
 static const uint8_t opl_mod_offset[9] = {
     0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x10, 0x11, 0x12
 };
@@ -424,7 +400,6 @@ static const uint8_t opl_car_offset[9] = {
     0x03, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x13, 0x14, 0x15
 };
 
-/* OPL note frequency table: F-number for each semitone in octave */
 static const uint16_t opl_freq_table[12] = {
     0x157, 0x16B, 0x181, 0x198, 0x1B0, 0x1CA,
     0x1E5, 0x202, 0x220, 0x241, 0x263, 0x287
@@ -477,6 +452,7 @@ typedef struct {
 
 static opl_music_t opl_music;
 static SceUID      mus_mutex = -1;
+static uint8_t     opl_reg_b0[9];
 
 static void opl_write(uint16_t reg, uint8_t val)
 {
@@ -518,32 +494,20 @@ static void load_genmidi(void)
                GENMIDI_NUM_INSTRS, (int)sizeof(genmidi_instr_t));
 }
 
-/* Write a GENMIDI operator to the correct OPL registers */
 static void opl_write_operator(int slot_offset, genmidi_op_t *op, int is_carrier,
                                 int vol_scale)
 {
     uint8_t level;
 
-    /* 0x20 + slot: tremolo/vibrato/sustain/ksr/mult */
     opl_write(0x20 + slot_offset, op->tremolo);
 
-    /* 0x40 + slot: KSL / output level
-     * For carrier (or additive mod), scale the level with volume.
-     * level field: bits 7-6 = KSL, bits 5-0 = total level (0=loud, 63=quiet)
-     */
     level = op->level;
     if (is_carrier || vol_scale) {
         int tl = level & 0x3F;
         int ksl = level & 0xC0;
-        /* Scale total level by volume: louder = lower TL value */
-        /* vol_scale: 0-127, tl: 0-63 */
-        /* We add attenuation based on inverse volume */
-        int atten = 63 - tl;  /* current "loudness" 0-63 */
-        if (vol_scale > 0) {
-            atten = (atten * vol_scale) / 127;
-        } else {
-            atten = 0;
-        }
+        int atten = 63 - tl;
+        if (vol_scale > 0) atten = (atten * vol_scale) / 127;
+        else atten = 0;
         tl = 63 - atten;
         if (tl < 0) tl = 0;
         if (tl > 63) tl = 63;
@@ -551,17 +515,11 @@ static void opl_write_operator(int slot_offset, genmidi_op_t *op, int is_carrier
     }
     opl_write(0x40 + slot_offset, level);
 
-    /* 0x60 + slot: attack/decay */
     opl_write(0x60 + slot_offset, op->attack);
-
-    /* 0x80 + slot: sustain/release */
     opl_write(0x80 + slot_offset, op->sustain);
-
-    /* 0xE0 + slot: waveform */
     opl_write(0xE0 + slot_offset, op->waveform & 0x07);
 }
 
-/* Setup an OPL channel with a GENMIDI instrument voice */
 static void opl_set_instrument(int voice, genmidi_voice_t *gv, int volume)
 {
     int mod_off = opl_mod_offset[voice];
@@ -569,23 +527,15 @@ static void opl_set_instrument(int voice, genmidi_voice_t *gv, int volume)
     uint8_t fb_conn;
     int is_additive;
 
-    /* Feedback/connection from modulator's feedback byte
-     * bits 3-1: feedback, bit 0: connection (0=FM, 1=additive)
-     */
     fb_conn = gv->modulator.feedback;
     is_additive = fb_conn & 0x01;
 
-    /* Write connection register: feedback + connection + output both speakers */
     opl_write(0xC0 + voice, (fb_conn & 0x0F) | 0x30);
 
-    /* Write modulator: scale volume only if additive synthesis */
     opl_write_operator(mod_off, &gv->modulator, 0, is_additive ? volume : 0);
-
-    /* Write carrier: always scale with volume */
     opl_write_operator(car_off, &gv->carrier, 1, volume);
 }
 
-/* Set just the volume on an existing voice */
 static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
 {
     int car_off = opl_car_offset[voice];
@@ -596,7 +546,6 @@ static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
 
     is_additive = gv->modulator.feedback & 0x01;
 
-    /* Update carrier level */
     level = gv->carrier.level;
     tl = level & 0x3F;
     ksl = level & 0xC0;
@@ -608,7 +557,6 @@ static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
     if (tl > 63) tl = 63;
     opl_write(0x40 + car_off, ksl | (uint8_t)tl);
 
-    /* If additive, also update modulator */
     if (is_additive) {
         level = gv->modulator.level;
         tl = level & 0x3F;
@@ -623,7 +571,6 @@ static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
     }
 }
 
-/* Key on */
 static void opl_key_on(int voice, int note)
 {
     int octave, fnote;
@@ -641,25 +588,23 @@ static void opl_key_on(int voice, int note)
     freq = opl_freq_table[fnote];
 
     opl_write(0xA0 + voice, freq & 0xFF);
-    opl_write(0xB0 + voice, 0x20 | ((octave & 7) << 2) | ((freq >> 8) & 3));
+    opl_reg_b0[voice] = 0x20 | ((octave & 7) << 2) | ((freq >> 8) & 3);
+    opl_write(0xB0 + voice, opl_reg_b0[voice]);
 }
 
-/* Key off */
 static void opl_key_off(int voice)
 {
-    /* Clear key-on bit, keep frequency */
-    uint8_t b0 = opl_music.chip.reg[0xB0 + voice];
-    opl_write(0xB0 + voice, b0 & ~0x20);
+    opl_reg_b0[voice] &= ~0x20;
+    opl_write(0xB0 + voice, opl_reg_b0[voice]);
 }
 
-/* Silence a voice completely */
 static void opl_silence_voice(int voice)
 {
+    opl_reg_b0[voice] = 0;
     opl_write(0xB0 + voice, 0);
     opl_write(0xA0 + voice, 0);
 }
 
-/* Find free or steal voice */
 static int opl_alloc_voice(int mus_channel, int priority)
 {
     int i, best;
@@ -686,7 +631,6 @@ static int opl_alloc_voice(int mus_channel, int priority)
     return best;
 }
 
-/* Get the genmidi_voice_t for a voice's current instrument */
 static genmidi_voice_t *get_voice_instr(int voice_idx)
 {
     int mus_ch, patch;
@@ -704,7 +648,6 @@ static genmidi_voice_t *get_voice_instr(int voice_idx)
     return &opl_music.genmidi[patch].voices[0];
 }
 
-/* MUS note on */
 static void mus_opl_note_on(int channel, int note, int volume)
 {
     int voice, patch, midi_note, combined_vol;
@@ -727,7 +670,6 @@ static void mus_opl_note_on(int channel, int note, int volume)
 
     voice = opl_alloc_voice(channel, volume >= 0 ? volume : 64);
 
-    /* Note mapping */
     if (inst->flags & GENMIDI_FLAG_FIXED) {
         midi_note = inst->fixed_note;
     } else {
@@ -736,12 +678,10 @@ static void mus_opl_note_on(int channel, int note, int volume)
     if (midi_note < 0) midi_note = 0;
     if (midi_note > 127) midi_note = 127;
 
-    /* Combined volume: note volume * channel volume */
     if (volume < 0) volume = opl_music.channels[channel].volume;
     combined_vol = (volume * opl_music.channels[channel].volume) / 127;
     if (combined_vol > 127) combined_vol = 127;
 
-    /* Setup instrument and key on */
     opl_set_instrument(voice, gv, combined_vol);
     opl_key_on(voice, midi_note);
 
@@ -752,7 +692,6 @@ static void mus_opl_note_on(int channel, int note, int volume)
     opl_music.voices[voice].age         = opl_music.voice_age++;
 }
 
-/* MUS note off */
 static void mus_opl_note_off(int channel, int note)
 {
     int i;
@@ -809,12 +748,12 @@ static void mus_process_event(void)
     last    = ev & 0x80;
 
     switch (type) {
-    case 0: { /* Release */
+    case 0: {
         byte note = mus_rb();
         mus_opl_note_off(channel, note & 0x7F);
         break;
     }
-    case 1: { /* Press */
+    case 1: {
         byte nb = mus_rb();
         int note = nb & 0x7F;
         int vol = -1;
@@ -825,25 +764,24 @@ static void mus_process_event(void)
         mus_opl_note_on(channel, note, vol);
         break;
     }
-    case 2: { /* Pitch bend */
+    case 2: {
         byte pb = mus_rb();
         opl_music.channels[channel].pitch_bend = pb;
         break;
     }
-    case 3: { /* System event */
+    case 3: {
         byte sys = mus_rb();
         if (sys == 10 || sys == 11 || sys == 14)
             mus_opl_all_off(channel);
         break;
     }
-    case 4: { /* Controller */
+    case 4: {
         byte ctrl = mus_rb();
         byte val  = mus_rb();
         if (ctrl == 0) {
             opl_music.channels[channel].patch = val;
         } else if (ctrl == 3) {
             opl_music.channels[channel].volume = val & 0x7F;
-            /* Update volume on active voices */
             for (i = 0; i < OPL_NUM_VOICES; i++) {
                 if (opl_music.voices[i].active &&
                     opl_music.voices[i].mus_channel == channel) {
@@ -895,7 +833,6 @@ static void mus_opl_tick(void)
         opl_music.delay_left--;
 }
 
-/* Generate and resample OPL output */
 static void opl_mix_into(int32_t *accum_buf, int nsamples)
 {
     int s;
@@ -913,7 +850,6 @@ static void opl_mix_into(int32_t *accum_buf, int nsamples)
             mus_opl_tick();
         }
 
-        /* Resample 49716 -> 48000 */
         opl_music.resample_acc += AUDIO_RATE;
         while (opl_music.resample_acc >= OUTPUT_RATE) {
             int16_t buf[4];
@@ -1006,11 +942,10 @@ static void start_audio_system(void)
     sfx_buf_idx = 0;
 
     memset(&opl_music, 0, sizeof(opl_music));
+    memset(opl_reg_b0, 0, sizeof(opl_reg_b0));
     OPL3_Reset(&opl_music.chip, AUDIO_RATE);
 
-    /* Enable waveform select (OPL2 compatibility) */
     opl_write(0x01, 0x20);
-    /* Make sure all voices are silent */
     for (i = 0; i < 9; i++) {
         opl_silence_voice(i);
     }
@@ -1603,7 +1538,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (OPL3 GENMIDI fixed v8) ===");
+    debug_log("=== Chex Quest Vita (OPL3 GENMIDI fixed v9) ===");
 
     init_display();
     if (!display_ready) {
