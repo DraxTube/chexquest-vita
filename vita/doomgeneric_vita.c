@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – AUDIO FUNZIONANTE */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – AUDIO + MUSICA + COMANDI */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -30,6 +30,7 @@ extern void D_PostEvent(event_t *ev);
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <math.h>
 
 #define TICRATE      35
 #define SCREENWIDTH  320
@@ -43,6 +44,10 @@ extern void D_PostEvent(event_t *ev);
 #define AUDIO_RATE        48000
 #define AUDIO_GRANULARITY 256
 #define MIX_CHANNELS      8
+
+/* Musica MUS defines */
+#define MUS_CHANNELS      16
+#define MUS_MAX_VOICES    32
 
 /* ================================================================
    Globals richiesti dal motore
@@ -152,7 +157,7 @@ static void show_color(uint32_t color)
 }
 
 /* ================================================================
-   Input
+   Input – layout migliorato con cambio armi
    ================================================================ */
 #define KQUEUE_SZ 64
 #define DEADZONE  35
@@ -162,6 +167,10 @@ static int kq_r = 0, kq_w = 0;
 static SceCtrlData pad_prev;
 static int input_init = 0;
 static int analog_held[6];
+
+/* Weapon cycling state */
+static int current_weapon = 1;  /* 1-7 */
+static int weapon_cycle_cooldown = 0;
 
 static void kq_push(int p, unsigned char k)
 {
@@ -199,20 +208,40 @@ static void do_poll_input(void)
 
     sceCtrlPeekBufferPositive(0, &pad, 1);
 
+    if (weapon_cycle_cooldown > 0) weapon_cycle_cooldown--;
+
+    /*
+     * Layout comandi PS Vita:
+     *
+     * D-Pad Su/Giu     = Avanti/Indietro
+     * D-Pad Sx/Dx      = Ruota sinistra/destra
+     * Left Stick Y     = Avanti/Indietro
+     * Left Stick X     = Strafe sinistra/destra
+     * Right Stick X    = Ruota sinistra/destra
+     * Cross (X)        = Usa/Apri porte
+     * Square           = Spara
+     * Circle           = Strafe modifier (tieni premuto + frecce = strafe)
+     * Triangle         = Mappa automap
+     * R Trigger        = Spara (alternativo)
+     * L Trigger        = Corri (run)
+     * Start            = Menu/Escape
+     * Select           = Conferma/Enter
+     *
+     * Cambio armi:
+     *   L Trigger + D-Pad Su    = Arma successiva
+     *   L Trigger + D-Pad Giu   = Arma precedente
+     *   Touch front (fascia alta) = Armi 1-7 direttamente
+     */
     {
         struct { unsigned btn; unsigned char key; } bm[] = {
-            { SCE_CTRL_UP,       KEY_UPARROW   },
-            { SCE_CTRL_DOWN,     KEY_DOWNARROW  },
-            { SCE_CTRL_LEFT,     KEY_LEFTARROW  },
-            { SCE_CTRL_RIGHT,    KEY_RIGHTARROW },
-            { SCE_CTRL_CROSS,    KEY_FIRE       },
-            { SCE_CTRL_CIRCLE,   KEY_USE        },
-            { SCE_CTRL_SQUARE,   KEY_RALT       },
-            { SCE_CTRL_TRIANGLE, KEY_TAB        },
-            { SCE_CTRL_RTRIGGER, KEY_FIRE       },
-            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },
-            { SCE_CTRL_START,    KEY_ESCAPE     },
-            { SCE_CTRL_SELECT,   KEY_ENTER      },
+            { SCE_CTRL_CROSS,    KEY_USE        },  /* Usa/Apri */
+            { SCE_CTRL_SQUARE,   KEY_FIRE       },  /* Spara */
+            { SCE_CTRL_CIRCLE,   KEY_RALT       },  /* Strafe modifier */
+            { SCE_CTRL_TRIANGLE, KEY_TAB        },  /* Automap */
+            { SCE_CTRL_RTRIGGER, KEY_FIRE       },  /* Spara alternativo */
+            { SCE_CTRL_LTRIGGER, KEY_RSHIFT     },  /* Corri */
+            { SCE_CTRL_START,    KEY_ESCAPE     },  /* Menu */
+            { SCE_CTRL_SELECT,   KEY_ENTER      },  /* Conferma */
             { 0, 0 }
         };
         for (i = 0; bm[i].btn; i++) {
@@ -223,19 +252,90 @@ static void do_poll_input(void)
         }
     }
 
+    /* D-Pad: se L trigger e' premuto -> cambio armi, altrimenti movimento */
+    {
+        int ltrig = (pad.buttons & SCE_CTRL_LTRIGGER) != 0;
+
+        if (ltrig && weapon_cycle_cooldown == 0) {
+            /* L + D-Pad Su = arma successiva */
+            int up_now  = (pad.buttons & SCE_CTRL_UP) != 0;
+            int up_was  = (pad_prev.buttons & SCE_CTRL_UP) != 0;
+            int dn_now  = (pad.buttons & SCE_CTRL_DOWN) != 0;
+            int dn_was  = (pad_prev.buttons & SCE_CTRL_DOWN) != 0;
+
+            if (up_now && !up_was) {
+                current_weapon++;
+                if (current_weapon > 7) current_weapon = 1;
+                kq_push(1, '0' + current_weapon);
+                kq_push(0, '0' + current_weapon);
+                weapon_cycle_cooldown = 5;
+            }
+            if (dn_now && !dn_was) {
+                current_weapon--;
+                if (current_weapon < 1) current_weapon = 7;
+                kq_push(1, '0' + current_weapon);
+                kq_push(0, '0' + current_weapon);
+                weapon_cycle_cooldown = 5;
+            }
+
+            /* L + D-Pad Sx/Dx = arma precedente/successiva (alternativo) */
+            {
+                int lf_now = (pad.buttons & SCE_CTRL_LEFT) != 0;
+                int lf_was = (pad_prev.buttons & SCE_CTRL_LEFT) != 0;
+                int rt_now = (pad.buttons & SCE_CTRL_RIGHT) != 0;
+                int rt_was = (pad_prev.buttons & SCE_CTRL_RIGHT) != 0;
+
+                if (lf_now && !lf_was) {
+                    current_weapon--;
+                    if (current_weapon < 1) current_weapon = 7;
+                    kq_push(1, '0' + current_weapon);
+                    kq_push(0, '0' + current_weapon);
+                    weapon_cycle_cooldown = 5;
+                }
+                if (rt_now && !rt_was) {
+                    current_weapon++;
+                    if (current_weapon > 7) current_weapon = 1;
+                    kq_push(1, '0' + current_weapon);
+                    kq_push(0, '0' + current_weapon);
+                    weapon_cycle_cooldown = 5;
+                }
+            }
+        } else if (!ltrig) {
+            /* D-Pad normale = movimento */
+            struct { unsigned btn; unsigned char key; } dpad[] = {
+                { SCE_CTRL_UP,    KEY_UPARROW   },
+                { SCE_CTRL_DOWN,  KEY_DOWNARROW  },
+                { SCE_CTRL_LEFT,  KEY_LEFTARROW  },
+                { SCE_CTRL_RIGHT, KEY_RIGHTARROW },
+                { 0, 0 }
+            };
+            for (i = 0; dpad[i].btn; i++) {
+                int now = (pad.buttons  & dpad[i].btn) != 0;
+                int was = (pad_prev.buttons & dpad[i].btn) != 0;
+                if ( now && !was) kq_push(1, dpad[i].key);
+                if (!now &&  was) kq_push(0, dpad[i].key);
+            }
+        }
+    }
+
+    /* Analog sticks */
+    /* Left stick: Y = avanti/indietro, X = strafe */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
                 &analog_held[2], &analog_held[3]);
+    /* Right stick: X = ruota */
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
+    /* Touch front: fascia alta per selezione diretta armi 1-7 */
     {
         SceTouchData touch;
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
         if (touch.reportNum > 0 && touch.report[0].y / 2 < 60) {
             int slot = (touch.report[0].x / 2) / (VITA_W / 7);
             if (slot >= 0 && slot < 7) {
+                current_weapon = slot + 1;
                 kq_push(1, '1' + slot);
                 kq_push(0, '1' + slot);
             }
@@ -245,7 +345,7 @@ static void do_poll_input(void)
 }
 
 /* ================================================================
-   AUDIO ENGINE — con mutex e doppio buffer
+   AUDIO ENGINE — SFX con mutex e doppio buffer
    ================================================================ */
 
 typedef struct {
@@ -346,12 +446,337 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
     return &sfx_cache[i];
 }
 
-/* --- Mixing --- */
+/* ================================================================
+   MUSICA MUS — Player completo
+   ================================================================ */
+
+/* MUS file format structures */
+#define MUS_ID        0x1A53554D  /* "MUS\x1A" */
+#define MUS_EVENT_RELEASE     0
+#define MUS_EVENT_PRESS       1
+#define MUS_EVENT_PITCHBEND   2
+#define MUS_EVENT_CONTROLLER  3
+#define MUS_EVENT_END         6
+#define MUS_EVENT_SCORE_END   5
+
+/* OPL-like FM synth simulation via simple additive sine waves */
+
+typedef struct {
+    int   active;
+    int   note;          /* MIDI note 0-127 */
+    int   volume;        /* 0-127 */
+    int   channel;       /* MUS channel */
+    int   phase_acc;     /* phase accumulator, fixed 16.16 */
+    int   phase_step;    /* frequency step, fixed 16.16 */
+    int   env_level;     /* envelope 0-256 */
+    int   env_state;     /* 0=attack 1=sustain 2=release 3=off */
+    int   env_counter;
+} mus_voice_t;
+
+typedef struct {
+    int volume;    /* 0-127 per channel */
+    int patch;     /* instrument */
+} mus_chan_t;
+
+typedef struct {
+    const byte *data;
+    int         data_len;
+    int         pos;           /* current read position in MUS data */
+    int         score_start;
+    int         score_len;
+    int         playing;
+    int         looping;
+    int         delay_left;    /* ticks remaining before next event */
+
+    mus_voice_t voices[MUS_MAX_VOICES];
+    mus_chan_t   channels[MUS_CHANNELS];
+
+    int         tick_samples;  /* samples per MUS tick at 48kHz */
+    int         tick_counter;  /* samples until next tick */
+
+    int         mus_volume;    /* 0-15 master music volume */
+} mus_player_t;
+
+static mus_player_t mus_player;
+static SceUID       mus_mutex = -1;
+
+/* Note frequency table (MIDI note -> Hz * 65536 / 48000) */
+static int mus_note_step[128];
+
+static void mus_init_tables(void)
+{
+    int i;
+    for (i = 0; i < 128; i++) {
+        /* freq = 440 * 2^((i-69)/12) */
+        double freq = 440.0 * pow(2.0, (i - 69) / 12.0);
+        /* phase step for 48kHz output, 16.16 fixed point
+           step = freq / 48000 * 65536 */
+        mus_note_step[i] = (int)(freq * 65536.0 / (double)AUDIO_RATE);
+    }
+}
+
+static int mus_find_free_voice(void)
+{
+    int i;
+    for (i = 0; i < MUS_MAX_VOICES; i++) {
+        if (!mus_player.voices[i].active)
+            return i;
+    }
+    /* Steal oldest in release state, or first */
+    for (i = 0; i < MUS_MAX_VOICES; i++) {
+        if (mus_player.voices[i].env_state >= 2)
+            return i;
+    }
+    return 0;
+}
+
+static void mus_note_on(int channel, int note, int volume)
+{
+    int vi;
+    mus_voice_t *v;
+
+    if (note < 0 || note > 127) return;
+
+    vi = mus_find_free_voice();
+    v = &mus_player.voices[vi];
+
+    v->active     = 1;
+    v->note       = note;
+    v->channel    = channel;
+    v->volume     = (volume >= 0) ? volume : mus_player.channels[channel].volume;
+    v->phase_acc  = 0;
+    v->phase_step = mus_note_step[note];
+    v->env_level  = 0;
+    v->env_state  = 0;   /* attack */
+    v->env_counter = 0;
+}
+
+static void mus_note_off(int channel, int note)
+{
+    int i;
+    for (i = 0; i < MUS_MAX_VOICES; i++) {
+        mus_voice_t *v = &mus_player.voices[i];
+        if (v->active && v->channel == channel && v->note == note) {
+            v->env_state = 2;  /* release */
+            v->env_counter = 0;
+        }
+    }
+}
+
+static void mus_all_notes_off(int channel)
+{
+    int i;
+    for (i = 0; i < MUS_MAX_VOICES; i++) {
+        if (mus_player.voices[i].channel == channel) {
+            mus_player.voices[i].env_state = 2;
+            mus_player.voices[i].env_counter = 0;
+        }
+    }
+}
+
+static byte mus_read_byte(void)
+{
+    if (mus_player.pos >= mus_player.data_len)
+        return 0;
+    return mus_player.data[mus_player.pos++];
+}
+
+static void mus_process_event(void)
+{
+    byte event_byte, channel, event_type;
+    int  last;
+
+    if (!mus_player.playing) return;
+    if (mus_player.pos >= mus_player.score_start + mus_player.score_len) {
+        if (mus_player.looping) {
+            mus_player.pos = mus_player.score_start;
+            int i;
+            for (i = 0; i < MUS_MAX_VOICES; i++)
+                mus_player.voices[i].active = 0;
+        } else {
+            mus_player.playing = 0;
+        }
+        return;
+    }
+
+    event_byte = mus_read_byte();
+    channel    = event_byte & 0x0F;
+    event_type = (event_byte >> 4) & 0x07;
+    last       = event_byte & 0x80;
+
+    switch (event_type) {
+    case MUS_EVENT_RELEASE: {
+        byte note = mus_read_byte();
+        mus_note_off(channel, note & 0x7F);
+        break;
+    }
+    case MUS_EVENT_PRESS: {
+        byte note_byte = mus_read_byte();
+        int  note = note_byte & 0x7F;
+        int  vol = -1;
+        if (note_byte & 0x80) {
+            vol = mus_read_byte() & 0x7F;
+            mus_player.channels[channel].volume = vol;
+        }
+        mus_note_on(channel, note, vol);
+        break;
+    }
+    case MUS_EVENT_PITCHBEND: {
+        mus_read_byte(); /* pitch value, ignored for now */
+        break;
+    }
+    case MUS_EVENT_CONTROLLER: {
+        byte ctrl = mus_read_byte();
+        byte val  = mus_read_byte();
+        if (ctrl == 3) {
+            mus_player.channels[channel].volume = val & 0x7F;
+        } else if (ctrl == 4) {
+            /* pan - ignored */
+        } else if (ctrl == 0) {
+            mus_player.channels[channel].patch = val;
+        }
+        break;
+    }
+    case MUS_EVENT_SCORE_END:
+    case MUS_EVENT_END:
+        if (mus_player.looping) {
+            mus_player.pos = mus_player.score_start;
+            {
+                int i;
+                for (i = 0; i < MUS_MAX_VOICES; i++)
+                    mus_player.voices[i].active = 0;
+            }
+        } else {
+            mus_player.playing = 0;
+        }
+        return;
+    default:
+        break;
+    }
+
+    /* Read delay if last bit set */
+    if (last) {
+        int delay = 0;
+        byte db;
+        do {
+            db = mus_read_byte();
+            delay = (delay << 7) | (db & 0x7F);
+        } while (db & 0x80);
+        mus_player.delay_left = delay;
+    }
+}
+
+static void mus_tick(void)
+{
+    if (!mus_player.playing) return;
+
+    while (mus_player.delay_left <= 0 && mus_player.playing) {
+        mus_process_event();
+    }
+
+    if (mus_player.delay_left > 0)
+        mus_player.delay_left--;
+}
+
+/* Sine table for music synth (256 entries, -127 to 127) */
+static int8_t mus_sine[256];
+
+static void mus_init_sine(void)
+{
+    int i;
+    for (i = 0; i < 256; i++) {
+        mus_sine[i] = (int8_t)(127.0 * sin(2.0 * 3.14159265358979 * i / 256.0));
+    }
+}
+
+/* Mix music into buffer (called under mutex) */
+static void mus_mix_into(int32_t *accum_buf, int nsamples)
+{
+    int i, s;
+    int mvol;
+
+    if (!mus_player.playing) return;
+
+    mvol = mus_player.mus_volume;
+    if (mvol <= 0) return;
+
+    for (s = 0; s < nsamples; s++) {
+        /* Advance tick timer */
+        mus_player.tick_counter--;
+        if (mus_player.tick_counter <= 0) {
+            mus_player.tick_counter = mus_player.tick_samples;
+            mus_tick();
+        }
+
+        /* Mix all active voices */
+        {
+            int32_t sample = 0;
+            for (i = 0; i < MUS_MAX_VOICES; i++) {
+                mus_voice_t *v = &mus_player.voices[i];
+                int wave, out;
+
+                if (!v->active) continue;
+
+                /* Simple envelope */
+                switch (v->env_state) {
+                case 0: /* attack */
+                    v->env_level += 16;
+                    if (v->env_level >= 256) {
+                        v->env_level = 256;
+                        v->env_state = 1;
+                    }
+                    break;
+                case 1: /* sustain */
+                    break;
+                case 2: /* release */
+                    v->env_level -= 4;
+                    if (v->env_level <= 0) {
+                        v->env_level = 0;
+                        v->env_state = 3;
+                        v->active = 0;
+                        continue;
+                    }
+                    break;
+                default:
+                    v->active = 0;
+                    continue;
+                }
+
+                /* Waveform: use sine table + a bit of harmonics for richer sound */
+                {
+                    int idx = (v->phase_acc >> 8) & 0xFF;
+                    int idx2 = (v->phase_acc >> 7) & 0xFF; /* 2nd harmonic */
+                    wave = mus_sine[idx] * 3 + mus_sine[idx2];
+                    wave /= 4;
+                }
+
+                out = (wave * v->volume * v->env_level) >> 15;
+                sample += out;
+
+                v->phase_acc += v->phase_step;
+            }
+
+            /* Apply music master volume */
+            sample = (sample * mvol) / 15;
+
+            /* Add to accumulation buffer (stereo, both channels same) */
+            accum_buf[s * 2 + 0] += sample;
+            accum_buf[s * 2 + 1] += sample;
+        }
+    }
+}
+
+/* ================================================================
+   Audio mixing - SFX + Music combined
+   ================================================================ */
 static void mix_into(int16_t *out, int nsamples)
 {
     int i, ch;
-    int32_t accum_l, accum_r;
+    int32_t accum[AUDIO_GRANULARITY * 2];
     int     mvol;
+
+    /* Clear accumulator */
+    memset(accum, 0, nsamples * 2 * sizeof(int32_t));
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
 
@@ -359,9 +784,9 @@ static void mix_into(int16_t *out, int nsamples)
     if (mvol < 0)  mvol = 0;
     if (mvol > 15) mvol = 15;
 
+    /* Mix SFX */
     for (i = 0; i < nsamples; i++) {
-        accum_l = 0;
-        accum_r = 0;
+        int32_t accum_l = 0, accum_r = 0;
 
         for (ch = 0; ch < MIX_CHANNELS; ch++) {
             mix_channel_t *c = &mix_ch[ch];
@@ -386,16 +811,26 @@ static void mix_into(int16_t *out, int nsamples)
         accum_l = (accum_l * mvol) / 15;
         accum_r = (accum_r * mvol) / 15;
 
-        if (accum_l >  32767) accum_l =  32767;
-        if (accum_l < -32768) accum_l = -32768;
-        if (accum_r >  32767) accum_r =  32767;
-        if (accum_r < -32768) accum_r = -32768;
-
-        out[i * 2 + 0] = (int16_t)accum_l;
-        out[i * 2 + 1] = (int16_t)accum_r;
+        accum[i * 2 + 0] += accum_l;
+        accum[i * 2 + 1] += accum_r;
     }
 
     sceKernelUnlockMutex(sfx_mutex, 1);
+
+    /* Mix Music */
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        mus_mix_into(accum, nsamples);
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+
+    /* Final clamp to int16 */
+    for (i = 0; i < nsamples * 2; i++) {
+        int32_t v = accum[i];
+        if (v >  32767) v =  32767;
+        if (v < -32768) v = -32768;
+        out[i] = (int16_t)v;
+    }
 }
 
 /* --- Thread audio --- */
@@ -430,10 +865,24 @@ static void start_audio_system(void)
     sfx_cache_count = 0;
     sfx_buf_idx = 0;
 
+    /* Init music tables */
+    mus_init_tables();
+    mus_init_sine();
+    memset(&mus_player, 0, sizeof(mus_player));
+    mus_player.mus_volume = 8;
+    /* MUS tick rate: ~140 ticks/second (DOOM standard) */
+    mus_player.tick_samples = AUDIO_RATE / 140;
+    mus_player.tick_counter = mus_player.tick_samples;
+
     sfx_mutex = sceKernelCreateMutex("sfx_mutex", 0, 0, NULL);
     if (sfx_mutex < 0) {
-        debug_logf("CreateMutex failed: 0x%08X", sfx_mutex);
+        debug_logf("CreateMutex sfx failed: 0x%08X", sfx_mutex);
         return;
+    }
+
+    mus_mutex = sceKernelCreateMutex("mus_mutex", 0, 0, NULL);
+    if (mus_mutex < 0) {
+        debug_logf("CreateMutex mus failed: 0x%08X", mus_mutex);
     }
 
     sfx_port = sceAudioOutOpenPort(
@@ -457,6 +906,7 @@ static void start_audio_system(void)
         debug_logf("All audio ports failed: 0x%08X", sfx_port);
         sceKernelDeleteMutex(sfx_mutex);
         sfx_mutex = -1;
+        if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
@@ -499,6 +949,7 @@ static void start_audio_system(void)
         sfx_port = -1;
         sceKernelDeleteMutex(sfx_mutex);
         sfx_mutex = -1;
+        if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
@@ -512,11 +963,12 @@ static void start_audio_system(void)
         sfx_port = -1;
         sceKernelDeleteMutex(sfx_mutex);
         sfx_mutex = -1;
+        if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
     audio_ready = 1;
-    debug_log("Audio system fully initialized!");
+    debug_log("Audio system fully initialized with music support!");
 }
 
 /* ================================================================
@@ -565,6 +1017,7 @@ void I_Quit(void)
     }
     if (sfx_port >= 0) sceAudioOutReleasePort(sfx_port);
     if (sfx_mutex >= 0) sceKernelDeleteMutex(sfx_mutex);
+    if (mus_mutex >= 0) sceKernelDeleteMutex(mus_mutex);
     sceKernelExitProcess(0);
 }
 
@@ -788,10 +1241,6 @@ void I_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
     debug_logf("SFX cache loaded: %d entries", sfx_cache_count);
 }
 
-/*
- * Matches: int I_StartSound(sfxinfo_t *sfxinfo, int channel, int vol, int sep);
- * NO pitch parameter in this engine version.
- */
 int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
 {
     int               lumpnum;
@@ -834,12 +1283,9 @@ found:
     c->pos_fixed  = 0;
     c->lumpnum    = lumpnum;
 
-    /* Resampling step: source_hz -> 48000 Hz, 16.16 fixed */
     c->step_fixed = (int)(((int64_t)entry->samplerate << 16) / AUDIO_RATE);
     if (c->step_fixed <= 0) c->step_fixed = (11025 << 16) / AUDIO_RATE;
 
-    /* Volume and stereo panning
-       vol: 0-127, sep: 0=left, 128=center, 255=right */
     {
         int vl, vr;
 
@@ -894,9 +1340,6 @@ void I_StopSound(int handle)
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
-/*
- * Matches: boolean I_SoundIsPlaying(int channel);
- */
 boolean I_SoundIsPlaying(int handle)
 {
     int i;
@@ -947,9 +1390,6 @@ void I_UpdateSoundParams(int handle, int vol, int sep)
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
-/*
- * Matches: void I_InitSound(boolean use_sfx_prefix);
- */
 void I_InitSound(boolean use_sfx_prefix)
 {
     (void)use_sfx_prefix;
@@ -974,45 +1414,216 @@ void I_ShutdownSound(void)
         sceKernelDeleteMutex(sfx_mutex);
         sfx_mutex = -1;
     }
+    if (mus_mutex >= 0) {
+        sceKernelDeleteMutex(mus_mutex);
+        mus_mutex = -1;
+    }
     audio_ready = 0;
 }
 
 void I_BindSoundVariables(void) {}
 
 /* ================================================================
-   MUSIC – stubs matching i_sound.h signatures
+   MUSIC – MUS format player
    ================================================================ */
-void    I_InitMusic(void)             { debug_log("I_InitMusic (stub)"); }
-void    I_ShutdownMusic(void)         {}
-void    I_SetMusicVolume(int v)       { (void)v; }
-void    I_PauseSong(void)             {}
-void    I_ResumeSong(void)            {}
-void    I_StopSong(void)              {}
+void I_InitMusic(void)
+{
+    debug_log("I_InitMusic");
+}
 
-/*
- * Matches: boolean I_MusicIsPlaying(void);
- */
-boolean I_MusicIsPlaying(void)        { return false; }
+void I_ShutdownMusic(void)
+{
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        mus_player.playing = 0;
+        memset(mus_player.voices, 0, sizeof(mus_player.voices));
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+}
+
+void I_SetMusicVolume(int v)
+{
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        mus_player.mus_volume = v;
+        if (mus_player.mus_volume < 0)  mus_player.mus_volume = 0;
+        if (mus_player.mus_volume > 15) mus_player.mus_volume = 15;
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+    debug_logf("I_SetMusicVolume: %d", v);
+}
+
+void I_PauseSong(void)
+{
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        mus_player.playing = 0;
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+}
+
+void I_ResumeSong(void)
+{
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        if (mus_player.data)
+            mus_player.playing = 1;
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+}
+
+void I_StopSong(void)
+{
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        mus_player.playing = 0;
+        memset(mus_player.voices, 0, sizeof(mus_player.voices));
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+}
+
+boolean I_MusicIsPlaying(void)
+{
+    return mus_player.playing ? true : false;
+}
 
 void *I_RegisterSong(void *data, int len)
 {
-    if (data && len > 4) {
-        byte *d = (byte *)data;
-        debug_logf("I_RegisterSong: %d bytes, hdr: %02X%02X%02X%02X",
-                   len, d[0], d[1], d[2], d[3]);
+    byte *d = (byte *)data;
+    byte *mus_data;
+    int   score_offset, score_len;
+
+    if (!data || len < 16) {
+        debug_logf("I_RegisterSong: invalid data (len=%d)", len);
+        return NULL;
     }
-    return (void *)1;
+
+    debug_logf("I_RegisterSong: %d bytes, hdr: %02X%02X%02X%02X",
+               len, d[0], d[1], d[2], d[3]);
+
+    /* Check MUS header: "MUS\x1A" */
+    if (d[0] != 'M' || d[1] != 'U' || d[2] != 'S' || d[3] != 0x1A) {
+        debug_log("I_RegisterSong: not MUS format, ignoring");
+        return (void *)1;  /* Return non-null so engine doesn't crash */
+    }
+
+    /* MUS header:
+       0-3:  "MUS\x1A"
+       4-5:  score length
+       6-7:  score start offset
+       8-9:  primary channels
+       10-11: secondary channels
+       12-13: number of instruments
+       14-15: reserved
+       16+:  instrument list, then score data
+    */
+    score_len    = d[4] | (d[5] << 8);
+    score_offset = d[6] | (d[7] << 8);
+
+    if (score_offset >= len || score_offset < 12) {
+        debug_logf("I_RegisterSong: bad offset %d (len=%d)", score_offset, len);
+        return (void *)1;
+    }
+
+    if (score_len <= 0 || score_offset + score_len > len) {
+        score_len = len - score_offset;
+    }
+
+    debug_logf("MUS: score_offset=%d score_len=%d", score_offset, score_len);
+
+    /* Copy data so it persists */
+    mus_data = (byte *)malloc(len);
+    if (!mus_data) {
+        debug_log("I_RegisterSong: malloc failed");
+        return (void *)1;
+    }
+    memcpy(mus_data, data, len);
+
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+    }
+
+    /* Stop any current song */
+    mus_player.playing = 0;
+    memset(mus_player.voices, 0, sizeof(mus_player.voices));
+
+    /* Free old data if we had any */
+    /* (We use a simple scheme: store pointer, free on re-register) */
+
+    mus_player.data        = mus_data;
+    mus_player.data_len    = len;
+    mus_player.score_start = score_offset;
+    mus_player.score_len   = score_len;
+    mus_player.pos         = score_offset;
+    mus_player.delay_left  = 0;
+    mus_player.tick_counter = mus_player.tick_samples;
+
+    /* Reset channel volumes */
+    {
+        int i;
+        for (i = 0; i < MUS_CHANNELS; i++) {
+            mus_player.channels[i].volume = 100;
+            mus_player.channels[i].patch  = 0;
+        }
+    }
+
+    if (mus_mutex >= 0) {
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+
+    debug_log("MUS song registered successfully");
+    return (void *)mus_data;
 }
 
-void I_UnRegisterSong(void *handle)   { (void)handle; }
+void I_UnRegisterSong(void *handle)
+{
+    if (!handle || handle == (void *)1) return;
 
-/*
- * Matches: void I_PlaySong(void *handle, boolean looping);
- */
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+    }
+
+    mus_player.playing = 0;
+    memset(mus_player.voices, 0, sizeof(mus_player.voices));
+
+    if (mus_player.data == (const byte *)handle) {
+        mus_player.data     = NULL;
+        mus_player.data_len = 0;
+    }
+
+    if (mus_mutex >= 0) {
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
+
+    free(handle);
+    debug_log("MUS song unregistered");
+}
+
 void I_PlaySong(void *handle, boolean looping)
 {
-    (void)handle;
-    (void)looping;
+    if (!handle || handle == (void *)1) return;
+
+    debug_logf("I_PlaySong: handle=%p looping=%d", handle, looping);
+
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+    }
+
+    if (mus_player.data == (const byte *)handle) {
+        mus_player.pos         = mus_player.score_start;
+        mus_player.delay_left  = 0;
+        mus_player.looping     = looping ? 1 : 0;
+        mus_player.tick_counter = mus_player.tick_samples;
+        memset(mus_player.voices, 0, sizeof(mus_player.voices));
+        mus_player.playing     = 1;
+        debug_log("MUS playback started!");
+    } else {
+        debug_log("I_PlaySong: handle mismatch, not playing");
+    }
+
+    if (mus_mutex >= 0) {
+        sceKernelUnlockMutex(mus_mutex, 1);
+    }
 }
 
 /* CD stubs */
@@ -1064,7 +1675,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (audio v4 fixed sigs) ===");
+    debug_log("=== Chex Quest Vita (audio + music + controls v5) ===");
 
     init_display();
     if (!display_ready) {
