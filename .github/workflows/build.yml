@@ -45,8 +45,6 @@ jobs:
             -o doomgeneric/doomgeneric/opl3.c
           curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.h \
             -o doomgeneric/doomgeneric/opl3.h
-          echo "OPL3 header first line:"
-          head -1 doomgeneric/doomgeneric/opl3.h
 
       - name: Copy vita source
         run: |
@@ -56,89 +54,168 @@ jobs:
         run: |
           sudo apt-get install -y imagemagick
 
-          # Rimuovi tutto e ricrea da zero
           rm -rf sce_sys
           mkdir -p sce_sys/livearea/contents
 
-          # icon0.png (128x128) - PNG semplice senza metadata
-          convert -size 128x128 xc:'#2E8B57' \
-            -fill '#FFD700' -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 28 \
-            -annotate +0-8 'CQ' \
-            -fill white -pointsize 11 \
-            -annotate +0+16 'CHEX QUEST' \
-            -strip -define png:exclude-chunk=all \
-            sce_sys/icon0.png
+          # === Download immagini Chex Quest ===
+          echo "Downloading Chex Quest images..."
 
-          # pic0.png (960x544)
-          convert -size 960x544 xc:'#1a1a2e' \
-            -fill '#FFD700' -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 72 \
-            -annotate +0-40 'CHEX QUEST' \
-            -fill white -pointsize 28 \
-            -annotate +0+30 'PS Vita Edition' \
-            -strip -define png:exclude-chunk=all \
-            sce_sys/pic0.png
+          curl -sL --max-time 30 -o /tmp/chex_title.png \
+            "https://tcrf.net/images/1/11/Chex_Quest-title.png" 2>/dev/null || true
 
-          # bg.png (840x500)
-          convert -size 840x500 xc:'#0f3460' \
-            -fill white -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 48 \
-            -annotate +0-20 'CHEX QUEST' \
-            -fill '#cccccc' -pointsize 20 \
-            -annotate +0+30 'PS Vita' \
-            -strip -define png:exclude-chunk=all \
-            sce_sys/livearea/contents/bg.png
+          curl -sL --max-time 30 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -H "Accept: image/png,image/*,*/*" \
+            -o /tmp/chex_logo_raw \
+            "https://static.wikia.nocookie.net/chexquest/images/b/b7/Chex-Quest-Logo.png/revision/latest?cb=20250226015616" 2>/dev/null || true
 
-          # startup.png (280x158)
-          convert -size 280x158 xc:'#e94560' \
-            -fill white -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 36 \
-            -annotate +0-8 'START' \
-            -fill '#FFD700' -pointsize 14 \
-            -annotate +0+22 'CHEX QUEST' \
-            -strip -define png:exclude-chunk=all \
-            sce_sys/livearea/contents/startup.png
+          # Verifica che siano immagini vere (non HTML di errore)
+          TITLE=""
+          LOGO=""
 
-          # template.xml - printf garantisce zero BOM e zero spazi iniziali
-          printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
-          printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
-          printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
-          printf '    <image>bg.png</image>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  </livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  <gate>\n' >> sce_sys/livearea/contents/template.xml
-          printf '    <startup-image>startup.png</startup-image>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
-          printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
+          if [ -s /tmp/chex_title.png ]; then
+            if file /tmp/chex_title.png | grep -qi "image\|PNG"; then
+              TITLE="/tmp/chex_title.png"
+              echo "OK: title screen scaricato"
+              identify "$TITLE" 2>/dev/null || true
+            else
+              echo "WARN: title screen non è un'immagine valida"
+              rm -f /tmp/chex_title.png
+            fi
+          fi
 
-          # Verifica tutti i file
-          echo "=== Verifica assets ==="
+          if [ -s /tmp/chex_logo_raw ]; then
+            if file /tmp/chex_logo_raw | grep -qi "image\|PNG\|JPEG\|WebP"; then
+              # Converti qualsiasi formato in PNG pulito
+              convert /tmp/chex_logo_raw -depth 8 -strip PNG32:/tmp/chex_logo.png 2>/dev/null && \
+                LOGO="/tmp/chex_logo.png" && \
+                echo "OK: logo scaricato e convertito" && \
+                identify "$LOGO" 2>/dev/null || true
+            else
+              echo "WARN: logo non è un'immagine valida"
+            fi
+            rm -f /tmp/chex_logo_raw
+          fi
+
+          # Fallback: usa quello disponibile per entrambi
+          [ -z "$LOGO" ] && LOGO="$TITLE"
+          [ -z "$TITLE" ] && TITLE="$LOGO"
+
+          echo "TITLE=$TITLE"
+          echo "LOGO=$LOGO"
+
+          # === icon0.png (128x128) — OBBLIGATORIO ===
+          if [ -n "$LOGO" ]; then
+            convert "$LOGO" \
+              -resize 128x128^ -gravity center -extent 128x128 \
+              -depth 8 -strip PNG32:sce_sys/icon0.png
+          else
+            convert -size 128x128 xc:'#2E8B57' \
+              -fill '#FFD700' -gravity center \
+              -font DejaVu-Sans-Bold -pointsize 28 \
+              -annotate +0-8 'CQ' \
+              -fill white -pointsize 11 \
+              -annotate +0+16 'CHEX QUEST' \
+              -depth 8 -strip PNG32:sce_sys/icon0.png
+          fi
+
+          # === pic0.png (960x544) ===
+          if [ -n "$TITLE" ]; then
+            convert "$TITLE" \
+              -resize 960x544^ -gravity center -extent 960x544 \
+              -depth 8 -strip PNG32:sce_sys/pic0.png
+          else
+            convert -size 960x544 xc:'#1a1a2e' \
+              -fill '#FFD700' -gravity center \
+              -font DejaVu-Sans-Bold -pointsize 72 \
+              -annotate +0-40 'CHEX QUEST' \
+              -fill white -pointsize 28 \
+              -annotate +0+30 'PS Vita Edition' \
+              -depth 8 -strip PNG32:sce_sys/pic0.png
+          fi
+
+          # === bg.png (840x500) ===
+          if [ -n "$TITLE" ]; then
+            convert "$TITLE" \
+              -resize 840x500^ -gravity center -extent 840x500 \
+              -depth 8 -strip PNG32:sce_sys/livearea/contents/bg.png
+          else
+            convert -size 840x500 xc:'#0f3460' \
+              -fill white -gravity center \
+              -font DejaVu-Sans-Bold -pointsize 48 \
+              -annotate +0-20 'CHEX QUEST' \
+              -fill '#cccccc' -pointsize 20 \
+              -annotate +0+30 'PS Vita' \
+              -depth 8 -strip PNG32:sce_sys/livearea/contents/bg.png
+          fi
+
+          # === startup.png (280x158) ===
+          if [ -n "$LOGO" ]; then
+            convert "$LOGO" \
+              -resize 280x158^ -gravity center -extent 280x158 \
+              -depth 8 -strip PNG32:sce_sys/livearea/contents/startup.png
+          else
+            convert -size 280x158 xc:'#e94560' \
+              -fill white -gravity center \
+              -font DejaVu-Sans-Bold -pointsize 36 \
+              -annotate +0-8 'PLAY' \
+              -fill '#FFD700' -pointsize 14 \
+              -annotate +0+22 'CHEX QUEST' \
+              -depth 8 -strip PNG32:sce_sys/livearea/contents/startup.png
+          fi
+
+          # === template.xml ===
+          cat > sce_sys/livearea/contents/template.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <livearea style="a1" format-ver="01.00" content-rev="1">
+            <livearea-bg>
+              <image>bg.png</image>
+            </livearea-bg>
+            <gate>
+              <startup-image>startup.png</startup-image>
+            </gate>
+          </livearea>
+          EOF
+
+          # === Verifica finale ===
+          echo ""
+          echo "=== VERIFICA ASSETS ==="
+          FAIL=0
           for f in sce_sys/icon0.png sce_sys/pic0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png \
                    sce_sys/livearea/contents/template.xml; do
             if [ ! -s "$f" ]; then
               echo "ERRORE: $f mancante o vuoto!"
-              exit 1
+              FAIL=1
+            else
+              SIZE=$(wc -c < "$f")
+              echo "OK: $f ($SIZE bytes)"
             fi
-            SIZE=$(wc -c < "$f")
-            echo "OK: $f ($SIZE bytes)"
           done
 
-          # Mostra primi byte del template (deve iniziare con 3C = '<')
-          echo "=== Primi byte template.xml ==="
-          xxd -l 20 sce_sys/livearea/contents/template.xml
-
-          # Mostra contenuto template
-          echo "=== Contenuto template.xml ==="
-          cat sce_sys/livearea/contents/template.xml
-
-          # Verifica dimensioni PNG
-          echo "=== Dimensioni PNG ==="
+          echo ""
+          echo "=== DIMENSIONI PNG ==="
           identify sce_sys/icon0.png
           identify sce_sys/pic0.png
           identify sce_sys/livearea/contents/bg.png
           identify sce_sys/livearea/contents/startup.png
+
+          echo ""
+          echo "=== FORMATO PNG (primi bytes) ==="
+          for f in sce_sys/icon0.png sce_sys/pic0.png; do
+            echo -n "$f: "
+            xxd -l 8 "$f" | head -1
+          done
+
+          echo ""
+          echo "=== template.xml ==="
+          cat sce_sys/livearea/contents/template.xml
+
+          if [ $FAIL -ne 0 ]; then
+            echo "ERRORE: asset mancanti!"
+            exit 1
+          fi
 
       - name: Build
         run: |
@@ -148,14 +225,17 @@ jobs:
           cmake ..
           make -j$(nproc)
 
-      - name: Verify VPK contents
+      - name: Verify VPK
         run: |
           cd build
           echo "=== Contenuto VPK ==="
           unzip -l *.vpk
           echo ""
-          echo "=== Verifica file richiesti nel VPK ==="
-          unzip -l *.vpk | grep "sce_sys" || echo "ERRORE: sce_sys mancante nel VPK!"
+          echo "=== File sce_sys nel VPK ==="
+          unzip -l *.vpk | grep "sce_sys"
+          echo ""
+          echo "=== Dimensione VPK ==="
+          ls -lh *.vpk
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
