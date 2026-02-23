@@ -1,74 +1,53 @@
-name: Build Chex Quest PS Vita
+name: Build ChexQuest Vita
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git python3 unzip
-
-      - name: Setup VitaSDK
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install VitaSDK
         run: |
+          git clone --depth 1 https://github.com/vitasdk/vdpm.git
+          cd vdpm
+          ./bootstrap-vitasdk.sh
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
-          git clone https://github.com/vitasdk/vdpm.git /tmp/vdpm
-          cd /tmp/vdpm
-          ./bootstrap-vitasdk.sh
-          echo "VITASDK=/usr/local/vitasdk" >> $GITHUB_ENV
-          echo "/usr/local/vitasdk/bin" >> $GITHUB_PATH
+          ./install-all.sh
 
       - name: Clone doomgeneric
-        run: git clone --depth 1 https://github.com/ozkl/doomgeneric.git
-
-      - name: Copy Vita platform file
-        run: cp vita/doomgeneric_vita.c doomgeneric/doomgeneric/
-
-      - name: Generate assets
-        run: python3 scripts/gen_assets.py
-
-      - name: Configure
         run: |
-          mkdir -p build && cd build
-          cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake \
-                -DCMAKE_BUILD_TYPE=Release ..
+          rm -rf doomgeneric
+          git clone --depth 1 https://github.com/ozkl/doomgeneric.git
+
+      - name: Download Nuked OPL3
+        run: |
+          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.c -o doomgeneric/doomgeneric/opl3.c
+          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.h -o doomgeneric/doomgeneric/opl3.h
+
+      - name: Copy vita source
+        run: |
+          cp doomgeneric_vita.c doomgeneric/doomgeneric/doomgeneric_vita.c
 
       - name: Build
         run: |
-          cd build
-          make -j$(nproc) 2>&1 | tee build.log
-
-      - name: Verify VPK
-        run: |
-          cd build
-          ls -la *.vpk 2>/dev/null
-          if [ -f ChexQuestVita.vpk ]; then
-            echo "=== VPK contents ==="
-            unzip -l ChexQuestVita.vpk
-          fi
+          export VITASDK=/usr/local/vitasdk
+          export PATH=$VITASDK/bin:$PATH
+          mkdir -p build && cd build
+          cmake ..
+          make -j$(nproc)
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
         with:
-          name: ChexQuest-Vita-VPK
+          name: ChexQuestVita
           path: build/*.vpk
-          if-no-files-found: warn
-
-      - name: Upload build log
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-log
-          path: build/build.log
