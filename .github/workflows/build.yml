@@ -17,15 +17,14 @@ jobs:
 
       - name: Verify files exist
         run: |
-          if [ ! -f "doomgeneric_vita.c" ]; then
-            echo "ERROR: doomgeneric_vita.c not found!"
-            exit 1
-          fi
-          if [ ! -f "CMakeLists.txt" ]; then
-            echo "ERROR: CMakeLists.txt not found!"
-            exit 1
-          fi
-          echo "All files OK"
+          for f in doomgeneric_vita.c CMakeLists.txt \
+                   sce_sys/livearea/contents/template.xml; do
+            if [ ! -f "$f" ]; then
+              echo "MANCANTE: $f"
+              exit 1
+            fi
+            echo "OK: $f"
+          done
 
       - name: Install VitaSDK
         run: |
@@ -56,79 +55,45 @@ jobs:
 
       - name: Generate LiveArea assets
         run: |
-          sudo apt-get install -y imagemagick
+          sudo apt-get install -y imagemagick wget
 
           mkdir -p sce_sys/livearea/contents
 
-          # === icon0.png (128x128) ===
-          convert -size 128x128 xc:'#1a5c2a' \
-            -fill '#2E8B57' -draw "roundrectangle 8,8 120,120 12,12" \
-            -fill '#FFD700' -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 32 \
-            -annotate +0-15 'CQ' \
-            -fill white -pointsize 12 \
-            -annotate +0+18 'CHEX' \
-            -annotate +0+32 'QUEST' \
-            -fill '#e94560' -pointsize 8 \
-            -annotate +0+48 'PS VITA' \
-            sce_sys/icon0.png
-          echo "icon0.png created"
+          # Download immagini
+          wget -q -O /tmp/chex_logo.jpg \
+            "https://images.launchbox-app.com/098d8137-5376-4acd-a17d-521587a69ac9.jpg" || true
 
-          # === pic0.png (960x544) ===
-          convert -size 960x544 \
-            'gradient:#0a2a0a-#1a5c2a' \
-            -fill '#FFD700' -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 72 \
-            -annotate +0-80 'CHEX QUEST' \
-            -fill white -pointsize 32 \
-            -annotate +0+10 'PS Vita Edition' \
-            -fill '#e94560' -pointsize 20 \
-            -annotate +0+60 'OPL3 Music - Full Sound - Touch Controls' \
-            -fill 'rgba(255,255,255,0.3)' -pointsize 14 \
-            -gravity south -annotate +0+20 'doomgeneric port v1.0' \
-            sce_sys/pic0.png
-          echo "pic0.png created"
+          wget -q -O /tmp/chex_wiki.png \
+            "https://static.wikia.nocookie.net/chexquest/images/b/b7/Chex-Quest-Logo.png/revision/latest?cb=20250226015616" \
+            --max-redirect=5 --user-agent="Mozilla/5.0" || true
 
-          # === bg.png (840x500) ===
-          convert -size 840x500 \
-            'gradient:#0f3460-#1a5c2a' \
-            -fill 'rgba(255,215,0,0.6)' -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 48 \
-            -annotate +0-40 'CHEX QUEST' \
-            -fill 'rgba(255,255,255,0.4)' -pointsize 20 \
-            -annotate +0+20 'PS Vita' \
-            sce_sys/livearea/contents/bg.png
-          echo "bg.png created"
+          # icon0.png (128x128) - da logo wiki
+          if [ -s /tmp/chex_wiki.png ]; then
+            convert /tmp/chex_wiki.png -resize 128x128^ -gravity center -extent 128x128 -background '#1a5c2a' -flatten sce_sys/icon0.png
+          else
+            convert -size 128x128 xc:'#1a5c2a' -fill '#FFD700' -gravity center -font DejaVu-Sans-Bold -pointsize 28 -annotate +0-8 'CQ' -fill white -pointsize 11 -annotate +0+16 'CHEX QUEST' sce_sys/icon0.png
+          fi
 
-          # === startup.png (280x158) ===
-          convert -size 280x158 xc:'#e94560' \
-            -fill white -gravity center \
-            -font DejaVu-Sans-Bold -pointsize 36 \
-            -annotate +0-10 'START' \
-            -fill '#FFD700' -pointsize 14 \
-            -annotate +0+25 'CHEX QUEST' \
-            sce_sys/livearea/contents/startup.png
-          echo "startup.png created"
+          # bg.png (840x500) - da immagine launchbox
+          if [ -s /tmp/chex_logo.jpg ]; then
+            convert /tmp/chex_logo.jpg -resize 840x500^ -gravity center -extent 840x500 sce_sys/livearea/contents/bg.png
+          else
+            convert -size 840x500 'gradient:#0f3460-#1a5c2a' -fill white -gravity center -font DejaVu-Sans-Bold -pointsize 48 -annotate +0+0 'CHEX QUEST' sce_sys/livearea/contents/bg.png
+          fi
 
-          # === template.xml ===
-          cat > sce_sys/livearea/contents/template.xml << 'XMLEOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <livearea style="a1" format-ver="01.00" content-rev="1">
-            <livearea-bg>
-              <image>bg.png</image>
-            </livearea-bg>
-            <gate>
-              <startup-image>startup.png</startup-image>
-            </gate>
-          </livearea>
-          XMLEOF
+          # pic0.png (960x544) - da stessa immagine
+          if [ -s /tmp/chex_logo.jpg ]; then
+            convert /tmp/chex_logo.jpg -resize 960x544^ -gravity center -extent 960x544 sce_sys/pic0.png
+          else
+            convert -size 960x544 'gradient:#0a2a0a-#1a5c2a' -fill '#FFD700' -gravity center -font DejaVu-Sans-Bold -pointsize 72 -annotate +0+0 'CHEX QUEST' sce_sys/pic0.png
+          fi
 
-          echo ""
-          echo "=== Final assets ==="
-          ls -la sce_sys/
+          # startup.png (280x158)
+          convert -size 280x158 xc:'#e94560' -fill white -gravity center -font DejaVu-Sans-Bold -pointsize 36 -annotate +0-8 'START' -fill '#FFD700' -pointsize 14 -annotate +0+22 'CHEX QUEST' sce_sys/livearea/contents/startup.png
+
+          echo "=== Assets ==="
+          ls -la sce_sys/icon0.png sce_sys/pic0.png
           ls -la sce_sys/livearea/contents/
-          file sce_sys/icon0.png
-          file sce_sys/pic0.png
 
       - name: Build
         run: |
