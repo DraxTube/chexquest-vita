@@ -41,7 +41,7 @@ extern void D_PostEvent(event_t *ev);
    Audio defines
    ================================================================ */
 #define AUDIO_RATE        48000
-#define AUDIO_GRANULARITY 256      /* campioni per blocco - deve essere multiplo di 64 */
+#define AUDIO_GRANULARITY 256
 #define MIX_CHANNELS      8
 
 /* ================================================================
@@ -245,7 +245,7 @@ static void do_poll_input(void)
 }
 
 /* ================================================================
-   AUDIO ENGINE — con mutex e doppio buffer corretto
+   AUDIO ENGINE — con mutex e doppio buffer
    ================================================================ */
 
 typedef struct {
@@ -270,7 +270,6 @@ static int            next_handle    = 1;
 static int            audio_ready    = 0;
 static int            sfx_log_count  = 0;
 
-/* Double buffer stereo S16 — allineato a 64 byte per DMA */
 static int16_t __attribute__((aligned(64))) sfx_buf[2][AUDIO_GRANULARITY * 2];
 static int sfx_buf_idx = 0;
 
@@ -315,17 +314,14 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 
     if (rate < 4000 || rate > 48000) rate = 11025;
 
-    /* 32 byte di padding (16 prima + 16 dopo) nei lump Doom originali */
     if (nsamples > rawlen - 8)
         nsamples = rawlen - 8;
     if (nsamples <= 0) return NULL;
 
-    /* Taglia padding iniziale e finale se presente */
     {
         const byte *pcm_start = raw + 8;
         int         pcm_len   = nsamples;
 
-        /* Molti WAD hanno 16 byte di pad prima e 16 dopo */
         if (pcm_len > 32) {
             pcm_start += 16;
             pcm_len   -= 32;
@@ -350,7 +346,7 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
     return &sfx_cache[i];
 }
 
-/* --- Mixing: chiamato dal thread audio con mutex --- */
+/* --- Mixing --- */
 static void mix_into(int16_t *out, int nsamples)
 {
     int i, ch;
@@ -379,7 +375,6 @@ static void mix_into(int16_t *out, int nsamples)
                 continue;
             }
 
-            /* 8-bit unsigned → signed 16-bit range */
             sample = ((int)c->data[pos] - 128) * 256;
 
             accum_l += (sample * c->vol_left)  >> 8;
@@ -388,11 +383,9 @@ static void mix_into(int16_t *out, int nsamples)
             c->pos_fixed += c->step_fixed;
         }
 
-        /* Applica master volume */
         accum_l = (accum_l * mvol) / 15;
         accum_r = (accum_r * mvol) / 15;
 
-        /* Clamp a int16 */
         if (accum_l >  32767) accum_l =  32767;
         if (accum_l < -32768) accum_l = -32768;
         if (accum_r >  32767) accum_r =  32767;
@@ -405,7 +398,7 @@ static void mix_into(int16_t *out, int nsamples)
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
-/* --- Thread audio: blocca su sceAudioOutOutput --- */
+/* --- Thread audio --- */
 static int sfx_thread_func(SceSize args, void *argp)
 {
     (void)args; (void)argp;
@@ -413,12 +406,8 @@ static int sfx_thread_func(SceSize args, void *argp)
 
     while (sfx_running) {
         int16_t *buf = sfx_buf[sfx_buf_idx];
-
         mix_into(buf, AUDIO_GRANULARITY);
-
-        /* Questa chiamata blocca fino a che il buffer è consumato dall'HW */
         sceAudioOutOutput(sfx_port, buf);
-
         sfx_buf_idx ^= 1;
     }
 
@@ -441,14 +430,12 @@ static void start_audio_system(void)
     sfx_cache_count = 0;
     sfx_buf_idx = 0;
 
-    /* Crea mutex per sincronizzazione mixer */
     sfx_mutex = sceKernelCreateMutex("sfx_mutex", 0, 0, NULL);
     if (sfx_mutex < 0) {
         debug_logf("CreateMutex failed: 0x%08X", sfx_mutex);
         return;
     }
 
-    /* Apri porta audio BGM (MAIN spesso è riservata dal sistema) */
     sfx_port = sceAudioOutOpenPort(
         SCE_AUDIO_OUT_PORT_TYPE_BGM,
         AUDIO_GRANULARITY,
@@ -475,14 +462,13 @@ static void start_audio_system(void)
 
     debug_logf("Audio port opened: %d", sfx_port);
 
-    /* Volume massimo su entrambi i canali */
     vols[0] = SCE_AUDIO_VOLUME_0DB;
     vols[1] = SCE_AUDIO_VOLUME_0DB;
     ret = sceAudioOutSetVolume(sfx_port,
         SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vols);
     debug_logf("SetVolume: 0x%08X", ret);
 
-    /* Fai un test: riempi il primo buffer con un breve beep per verificare */
+    /* Test beep */
     {
         int t;
         int16_t *testbuf = sfx_buf[0];
@@ -493,19 +479,16 @@ static void start_audio_system(void)
         }
         ret = sceAudioOutOutput(sfx_port, testbuf);
         debug_logf("Test beep output: 0x%08X", ret);
-
-        /* Secondo blocco di silenzio per flush */
         memset(sfx_buf[1], 0, sizeof(sfx_buf[1]));
         sceAudioOutOutput(sfx_port, sfx_buf[1]);
     }
 
-    /* Avvia thread mixer */
     sfx_running = 1;
     sfx_thread_id = sceKernelCreateThread(
         "doom_sfx",
         sfx_thread_func,
         0x10000100,
-        0x10000,       /* 64KB stack */
+        0x10000,
         0, 0, NULL
     );
 
@@ -756,7 +739,7 @@ void I_UpdateJoystick(void)     {}
 void I_BindJoystickVariables(void) {}
 
 /* ================================================================
-   SOUND – I_* interface per Doom engine
+   SOUND – signatures matching i_sound.h exactly
    ================================================================ */
 
 void I_SetChannels(void)
@@ -805,7 +788,11 @@ void I_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
     debug_logf("SFX cache loaded: %d entries", sfx_cache_count);
 }
 
-int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int pitch)
+/*
+ * Matches: int I_StartSound(sfxinfo_t *sfxinfo, int channel, int vol, int sep);
+ * NO pitch parameter in this engine version.
+ */
+int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
 {
     int               lumpnum;
     sfx_cache_entry_t *entry;
@@ -829,7 +816,7 @@ int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int pitch)
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
 
-    /* Trova canale libero oppure ruba il più vecchio */
+    /* Find free channel or steal oldest */
     best = 0;
     oldest_handle = 0x7FFFFFFF;
     for (i = 0; i < MIX_CHANNELS; i++) {
@@ -847,18 +834,11 @@ found:
     c->pos_fixed  = 0;
     c->lumpnum    = lumpnum;
 
-    /* Resampling step: sorgente_hz → 48000 Hz, 16.16 fixed */
+    /* Resampling step: source_hz -> 48000 Hz, 16.16 fixed */
     c->step_fixed = (int)(((int64_t)entry->samplerate << 16) / AUDIO_RATE);
-
-    /* Pitch adjustment: 128 = normale */
-    if (pitch > 0 && pitch != 128) {
-        c->step_fixed = (int)(((int64_t)c->step_fixed * pitch) / 128);
-    }
-
-    /* Assicurati che step non sia 0 */
     if (c->step_fixed <= 0) c->step_fixed = (11025 << 16) / AUDIO_RATE;
 
-    /* Volume e panning stereo
+    /* Volume and stereo panning
        vol: 0-127, sep: 0=left, 128=center, 255=right */
     {
         int vl, vr;
@@ -866,7 +846,6 @@ found:
         if (sep < 0)   sep = 128;
         if (sep > 255) sep = 128;
 
-        /* Calcola panning lineare */
         vr = (sep * 256) / 255;
         vl = 256 - vr;
 
@@ -878,7 +857,6 @@ found:
         c->vol_left  = (vl * vol) / 127;
         c->vol_right = (vr * vol) / 127;
 
-        /* Clamp volume */
         if (c->vol_left  > 256) c->vol_left  = 256;
         if (c->vol_right > 256) c->vol_right = 256;
     }
@@ -893,9 +871,9 @@ found:
 
     if (sfx_log_count < 60) {
         debug_logf("SND play: lump=%d rate=%d len=%d vol=%d sep=%d "
-                   "pitch=%d step=0x%X ch=%d hnd=%d",
+                   "step=0x%X ch=%d hnd=%d",
                    lumpnum, entry->samplerate, entry->length,
-                   vol, sep, pitch, c->step_fixed, best, handle);
+                   vol, sep, c->step_fixed, best, handle);
         sfx_log_count++;
     }
 
@@ -916,14 +894,18 @@ void I_StopSound(int handle)
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
-int I_SoundIsPlaying(int handle)
+/*
+ * Matches: boolean I_SoundIsPlaying(int channel);
+ */
+boolean I_SoundIsPlaying(int handle)
 {
-    int i, result = 0;
-    if (sfx_mutex < 0) return 0;
+    int i;
+    boolean result = false;
+    if (sfx_mutex < 0) return false;
     sceKernelLockMutex(sfx_mutex, 1, NULL);
     for (i = 0; i < MIX_CHANNELS; i++) {
         if (mix_ch[i].active && mix_ch[i].handle == handle) {
-            result = 1;
+            result = true;
             break;
         }
     }
@@ -933,7 +915,7 @@ int I_SoundIsPlaying(int handle)
 
 void I_UpdateSound(void)
 {
-    /* Il thread audio fa tutto in autonomia */
+    /* Audio thread handles everything */
 }
 
 void I_UpdateSoundParams(int handle, int vol, int sep)
@@ -965,7 +947,10 @@ void I_UpdateSoundParams(int handle, int vol, int sep)
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
-void I_InitSound(int use_sfx_prefix)
+/*
+ * Matches: void I_InitSound(boolean use_sfx_prefix);
+ */
+void I_InitSound(boolean use_sfx_prefix)
 {
     (void)use_sfx_prefix;
     debug_log("I_InitSound");
@@ -995,15 +980,19 @@ void I_ShutdownSound(void)
 void I_BindSoundVariables(void) {}
 
 /* ================================================================
-   MUSIC – stubs
+   MUSIC – stubs matching i_sound.h signatures
    ================================================================ */
-void  I_InitMusic(void)           { debug_log("I_InitMusic (stub)"); }
-void  I_ShutdownMusic(void)       {}
-void  I_SetMusicVolume(int v)     { (void)v; }
-void  I_PauseSong(void)           {}
-void  I_ResumeSong(void)          {}
-void  I_StopSong(void)            {}
-int   I_MusicIsPlaying(void)      { return 0; }
+void    I_InitMusic(void)             { debug_log("I_InitMusic (stub)"); }
+void    I_ShutdownMusic(void)         {}
+void    I_SetMusicVolume(int v)       { (void)v; }
+void    I_PauseSong(void)             {}
+void    I_ResumeSong(void)            {}
+void    I_StopSong(void)              {}
+
+/*
+ * Matches: boolean I_MusicIsPlaying(void);
+ */
+boolean I_MusicIsPlaying(void)        { return false; }
 
 void *I_RegisterSong(void *data, int len)
 {
@@ -1016,7 +1005,15 @@ void *I_RegisterSong(void *data, int len)
 }
 
 void I_UnRegisterSong(void *handle)   { (void)handle; }
-void I_PlaySong(void *handle, int l)  { (void)handle; (void)l; }
+
+/*
+ * Matches: void I_PlaySong(void *handle, boolean looping);
+ */
+void I_PlaySong(void *handle, boolean looping)
+{
+    (void)handle;
+    (void)looping;
+}
 
 /* CD stubs */
 int  I_CDMusInit(void)           { return 0; }
@@ -1067,7 +1064,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (audio v3 mutex) ===");
+    debug_log("=== Chex Quest Vita (audio v4 fixed sigs) ===");
 
     init_display();
     if (!display_ready) {
