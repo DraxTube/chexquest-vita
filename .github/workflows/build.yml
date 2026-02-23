@@ -15,6 +15,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify files exist
+        run: |
+          if [ ! -f "doomgeneric_vita.c" ]; then
+            echo "ERROR: doomgeneric_vita.c not found!"
+            exit 1
+          fi
+          if [ ! -f "CMakeLists.txt" ]; then
+            echo "ERROR: CMakeLists.txt not found!"
+            exit 1
+          fi
+          echo "All files OK"
+
       - name: Install VitaSDK
         run: |
           git clone --depth 1 https://github.com/vitasdk/vdpm.git
@@ -31,8 +43,10 @@ jobs:
 
       - name: Download Nuked OPL3
         run: |
-          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.c -o doomgeneric/doomgeneric/opl3.c
-          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/opl3.h -o doomgeneric/doomgeneric/opl3.h
+          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/src/opl3.c \
+            -o doomgeneric/doomgeneric/opl3.c
+          curl -sL https://raw.githubusercontent.com/nukeykt/Nuked-OPL3/master/src/opl3.h \
+            -o doomgeneric/doomgeneric/opl3.h
 
       - name: Copy vita source
         run: |
