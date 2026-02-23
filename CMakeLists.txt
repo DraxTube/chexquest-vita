@@ -21,8 +21,6 @@ set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
 
 file(GLOB DG_SOURCES "${DG_DIR}/*.c")
 
-# Files da escludere: tutti i backend platform-specific e i moduli
-# che reimplementiamo in doomgeneric_vita.c
 set(EXCLUDE_FILES
     "doomgeneric_allegro.c"
     "doomgeneric_sdl.c"
@@ -63,7 +61,6 @@ foreach(exc ${EXCLUDE_FILES})
     endif()
 endforeach()
 
-# Rimuovi qualsiasi altro doomgeneric_*.c tranne doomgeneric.c e doomgeneric_vita.c
 foreach(src ${DG_SOURCES})
     get_filename_component(name ${src} NAME)
     if(name MATCHES "^doomgeneric_"
@@ -74,18 +71,14 @@ foreach(src ${DG_SOURCES})
 endforeach()
 
 # Assicurati che doomgeneric_vita.c sia incluso
-# (potrebbe essere nella root del progetto o in DG_DIR)
 set(VITA_SRC "${DG_DIR}/doomgeneric_vita.c")
 if(NOT EXISTS "${VITA_SRC}")
-    # Cerca nella root del progetto
     set(VITA_SRC "${CMAKE_SOURCE_DIR}/doomgeneric_vita.c")
 endif()
 if(NOT EXISTS "${VITA_SRC}")
-    # Cerca in doomgeneric/
     set(VITA_SRC "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric_vita.c")
 endif()
 
-# Aggiungi solo se non e' gia' nella lista
 list(FIND DG_SOURCES "${VITA_SRC}" VITA_IDX)
 if(VITA_IDX EQUAL -1)
     if(EXISTS "${VITA_SRC}")
@@ -95,14 +88,6 @@ if(VITA_IDX EQUAL -1)
         message(FATAL_ERROR "Cannot find doomgeneric_vita.c!")
     endif()
 endif()
-
-# Stampa sorgenti per debug (opzionale, rimuovere dopo)
-message(STATUS "=== Source files ===")
-foreach(src ${DG_SOURCES})
-    get_filename_component(name ${src} NAME)
-    message(STATUS "  ${name}")
-endforeach()
-message(STATUS "=== Total: ${DG_SOURCES} ===")
 
 add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
@@ -115,12 +100,11 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     DOOMGENERIC_RESY=200
 )
 
-# Link libraries - NOTA: SceAudioOut_stub per sceAudioOutOpenPort etc.
 target_link_libraries(${PROJECT_NAME}
     SceDisplay_stub
     SceCtrl_stub
     SceTouch_stub
-    SceAudioOut_stub
+    SceAudio_stub
     SceSysmodule_stub
     SceGxm_stub
     SceCommonDialog_stub
