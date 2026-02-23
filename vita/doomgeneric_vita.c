@@ -750,7 +750,7 @@ static void mus_mix_into(int32_t *accum_buf, int nsamples)
                     wave /= 4;
                 }
 
-                out = (wave * v->volume * v->env_level) >> 15;
+                out = (wave * v->volume * v->env_level) >> 9;
                 sample += out;
 
                 v->phase_acc += v->phase_step;
