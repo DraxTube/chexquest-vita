@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – AUDIO + MUSICA FM + COMANDI */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -32,21 +32,22 @@ extern void D_PostEvent(event_t *ev);
 #include <time.h>
 #include <math.h>
 
+/* Nuked OPL3 */
+#include "opl3.h"
+
 #define TICRATE      35
 #define SCREENWIDTH  320
 #define SCREENHEIGHT 200
 #define VITA_W       960
 #define VITA_H       544
 
-/* ================================================================
-   Audio defines
-   ================================================================ */
-#define AUDIO_RATE        48000
+#define AUDIO_RATE        49716   /* OPL3 native rate */
+#define OUTPUT_RATE       48000
 #define AUDIO_GRANULARITY 256
 #define MIX_CHANNELS      8
 
 /* ================================================================
-   Globals richiesti dal motore
+   Globals
    ================================================================ */
 byte *I_VideoBuffer = NULL;
 int   screenvisible = 1;
@@ -78,7 +79,7 @@ static uint32_t get_ms(void)
 }
 
 /* ================================================================
-   Debug logging
+   Debug
    ================================================================ */
 static void debug_log(const char *msg)
 {
@@ -97,7 +98,7 @@ static void debug_logf(const char *fmt, ...)
 }
 
 /* ================================================================
-   Vita display
+   Display init
    ================================================================ */
 static void init_display(void)
 {
@@ -153,7 +154,7 @@ static void show_color(uint32_t color)
 }
 
 /* ================================================================
-   Input – layout migliorato con cambio armi
+   Input
    ================================================================ */
 #define KQUEUE_SZ 64
 #define DEADZONE  35
@@ -163,7 +164,6 @@ static int kq_r = 0, kq_w = 0;
 static SceCtrlData pad_prev;
 static int input_init = 0;
 static int analog_held[6];
-
 static int current_weapon = 1;
 static int weapon_cycle_cooldown = 0;
 
@@ -205,7 +205,6 @@ static void do_poll_input(void)
 
     if (weapon_cycle_cooldown > 0) weapon_cycle_cooldown--;
 
-    /* Pulsanti principali (non D-Pad) */
     {
         struct { unsigned btn; unsigned char key; } bm[] = {
             { SCE_CTRL_CROSS,    KEY_USE        },
@@ -226,7 +225,6 @@ static void do_poll_input(void)
         }
     }
 
-    /* D-Pad: se L trigger premuto -> cambio armi, altrimenti movimento */
     {
         int ltrig = (pad.buttons & SCE_CTRL_LTRIGGER) != 0;
 
@@ -285,7 +283,6 @@ static void do_poll_input(void)
         }
     }
 
-    /* Analog sticks */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
@@ -293,7 +290,6 @@ static void do_poll_input(void)
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
-    /* Touch front: fascia alta per selezione diretta armi 1-7 */
     {
         SceTouchData touch;
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
@@ -310,9 +306,8 @@ static void do_poll_input(void)
 }
 
 /* ================================================================
-   AUDIO ENGINE — SFX
+   SFX ENGINE
    ================================================================ */
-
 typedef struct {
     const byte *data;
     int         length;
@@ -338,7 +333,6 @@ static int            sfx_log_count  = 0;
 static int16_t __attribute__((aligned(64))) sfx_buf[2][AUDIO_GRANULARITY * 2];
 static int sfx_buf_idx = 0;
 
-/* --- SFX lump cache --- */
 #define SFX_CACHE_MAX 128
 typedef struct {
     int         lumpnum;
@@ -352,19 +346,13 @@ static int sfx_cache_count = 0;
 
 static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 {
-    int    i;
-    byte  *raw;
-    int    rawlen;
-    int    format, rate, nsamples;
+    int i; byte *raw; int rawlen, format, rate, nsamples;
 
-    for (i = 0; i < sfx_cache_count; i++) {
-        if (sfx_cache[i].lumpnum == lumpnum)
-            return &sfx_cache[i];
-    }
+    for (i = 0; i < sfx_cache_count; i++)
+        if (sfx_cache[i].lumpnum == lumpnum) return &sfx_cache[i];
 
     rawlen = W_LumpLength(lumpnum);
     if (rawlen < 8) return NULL;
-
     raw = W_CacheLumpNum(lumpnum, PU_STATIC);
     if (!raw) return NULL;
 
@@ -372,519 +360,466 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
     rate     = raw[2] | (raw[3] << 8);
     nsamples = raw[4] | (raw[5] << 8) | (raw[6] << 16) | (raw[7] << 24);
 
-    if (format != 3) {
-        debug_logf("SFX lump %d: bad format %d", lumpnum, format);
-        return NULL;
-    }
-
+    if (format != 3) return NULL;
     if (rate < 4000 || rate > 48000) rate = 11025;
-
-    if (nsamples > rawlen - 8)
-        nsamples = rawlen - 8;
+    if (nsamples > rawlen - 8) nsamples = rawlen - 8;
     if (nsamples <= 0) return NULL;
 
     {
         const byte *pcm_start = raw + 8;
-        int         pcm_len   = nsamples;
-
-        if (pcm_len > 32) {
-            pcm_start += 16;
-            pcm_len   -= 32;
-        }
-
-        if (sfx_cache_count >= SFX_CACHE_MAX) {
-            debug_log("SFX cache full!");
-            return NULL;
-        }
-
+        int pcm_len = nsamples;
+        if (pcm_len > 32) { pcm_start += 16; pcm_len -= 32; }
+        if (sfx_cache_count >= SFX_CACHE_MAX) return NULL;
         i = sfx_cache_count++;
         sfx_cache[i].lumpnum    = lumpnum;
         sfx_cache[i].samples    = pcm_start;
         sfx_cache[i].length     = pcm_len;
         sfx_cache[i].samplerate = rate;
     }
-
-    debug_logf("SFX cached: lump=%d rate=%d len=%d rawlen=%d",
-               lumpnum, sfx_cache[i].samplerate,
-               sfx_cache[i].length, rawlen);
-
     return &sfx_cache[i];
 }
 
 /* ================================================================
-   MUSICA MUS — Player con synth FM pseudo-OPL
+   OPL3 MUSIC ENGINE
    ================================================================ */
 
-#define MUS_CHANNELS      16
-#define MUS_MAX_VOICES    32
+/* GENMIDI lump structures */
+#define GENMIDI_NUM_INSTRS   175
+#define GENMIDI_HEADER_SIZE  8
+#define GENMIDI_FLAG_FIXED   0x0001
+#define GENMIDI_FLAG_2VOICE  0x0004
 
-#define INST_DEFAULT      0
-#define INST_BASS         1
-#define INST_LEAD         2
-#define INST_PAD          3
-#define INST_BRASS        4
-#define INST_STRING       5
-#define INST_ORGAN        6
-#define INST_GUITAR       7
-#define INST_PERC_KICK    100
-#define INST_PERC_SNARE   101
-#define INST_PERC_HIHAT   102
-#define INST_PERC_TOM     103
-#define INST_PERC_CYMBAL  104
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t tremolo;
+    uint8_t attack;
+    uint8_t sustain;
+    uint8_t waveform;
+    uint8_t scale;
+    uint8_t level;
+    uint8_t feedback;
+} genmidi_op_t;
 
 typedef struct {
-    int   active;
-    int   note;
-    int   volume;
-    int   channel;
-    int   inst_type;
-
-    int   phase_acc;
-    int   phase_step;
-
-    int   mod_phase;
-    int   mod_step;
-    int   mod_depth;
-
-    int   env_level;
-    int   env_state;
-    int   env_counter;
-
-    int   attack_rate;
-    int   decay_rate;
-    int   sustain_level;
-    int   release_rate;
-
-    int   vib_phase;
-    int   vib_speed;
-    int   vib_depth;
-
-    unsigned int noise_state;
-    int   noise_decay;
-} mus_voice_t;
+    genmidi_op_t modulator;
+    genmidi_op_t carrier;
+    uint16_t     base_note_offset;
+} genmidi_voice_t;
 
 typedef struct {
-    int volume;
-    int patch;
-} mus_chan_t;
+    uint16_t       flags;
+    uint8_t        fine_tuning;
+    uint8_t        fixed_note;
+    genmidi_voice_t voices[2];
+} genmidi_instr_t;
+#pragma pack(pop)
+
+/* OPL register offsets for each channel */
+static const int opl_slot_offsets[18] = {
+    0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x10, 0x11, 0x12,
+    0x100, 0x101, 0x102, 0x108, 0x109, 0x10A, 0x110, 0x111, 0x112
+};
+
+static const int opl_chan_offsets[18] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x108
+};
+
+/* Note frequencies for OPL */
+static const uint16_t opl_freq_table[12] = {
+    0x157, 0x16B, 0x181, 0x198, 0x1B0, 0x1CA,
+    0x1E5, 0x202, 0x220, 0x241, 0x263, 0x287
+};
+
+/* MUS event types */
+#define MUS_EV_RELEASE   0
+#define MUS_EV_PRESS     1
+#define MUS_EV_PITCH     2
+#define MUS_EV_SYS       3
+#define MUS_EV_CTRL      4
+#define MUS_EV_END       5
+#define MUS_EV_END2      6
+
+#define OPL_NUM_VOICES   9  /* OPL2 mode: 9 melodic channels */
+#define PERCUSSION_CHAN   15
 
 typedef struct {
-    const byte *data;
-    int         data_len;
-    int         pos;
-    int         score_start;
-    int         score_len;
-    int         playing;
-    int         looping;
-    int         delay_left;
+    int      active;
+    int      mus_channel;
+    int      note;
+    int      priority;
+    uint32_t age;
+} opl_voice_t;
 
-    mus_voice_t voices[MUS_MAX_VOICES];
-    mus_chan_t   channels[MUS_CHANNELS];
+typedef struct {
+    int  volume;      /* 0-127 */
+    int  patch;       /* instrument number */
+    int  pitch_bend;  /* center = 64 */
+} opl_mus_chan_t;
 
-    int         tick_samples;
-    int         tick_counter;
-    int         mus_volume;
-} mus_player_t;
+typedef struct {
+    /* OPL3 chip */
+    opl3_chip        chip;
 
-static mus_player_t mus_player;
+    /* GENMIDI data */
+    genmidi_instr_t *genmidi;
+    int              genmidi_loaded;
+
+    /* Voice allocation */
+    opl_voice_t      voices[OPL_NUM_VOICES];
+    opl_mus_chan_t    channels[16];
+    uint32_t         voice_age;
+
+    /* MUS playback */
+    const byte      *mus_data;
+    int              mus_len;
+    int              mus_pos;
+    int              score_start;
+    int              score_len;
+    int              playing;
+    int              looping;
+    int              delay_left;
+
+    /* Timing: ticks at 140Hz, output at 48kHz */
+    int              tick_samples;   /* samples per MUS tick */
+    int              tick_counter;
+
+    /* Volume */
+    int              music_volume;   /* 0-15 */
+
+    /* Resampling: OPL runs at 49716Hz, output at 48000Hz */
+    int32_t          resample_acc;
+    int16_t          last_sample_l;
+    int16_t          last_sample_r;
+} opl_music_t;
+
+static opl_music_t  opl_music;
 static SceUID       mus_mutex = -1;
 
-/* Waveform tables */
-static int8_t wave_sine[256];
-static int8_t wave_square[256];
-static int8_t wave_saw[256];
-static int8_t wave_tri[256];
-
-static int mus_note_step[128];
-
-static void mus_init_tables(void)
+/* Write to OPL register */
+static void opl_write(uint16_t reg, uint8_t val)
 {
-    int i;
-
-    for (i = 0; i < 128; i++) {
-        double freq = 440.0 * pow(2.0, (i - 69) / 12.0);
-        mus_note_step[i] = (int)(freq * 65536.0 / (double)AUDIO_RATE);
-    }
-
-    for (i = 0; i < 256; i++) {
-        wave_sine[i] = (int8_t)(127.0 * sin(2.0 * 3.14159265358979 * i / 256.0));
-    }
-
-    for (i = 0; i < 256; i++) {
-        if (i < 8)         wave_square[i] = (int8_t)(127 * i / 8);
-        else if (i < 120)  wave_square[i] = 127;
-        else if (i < 136)  wave_square[i] = (int8_t)(127 - 254 * (i - 120) / 16);
-        else if (i < 248)  wave_square[i] = -127;
-        else               wave_square[i] = (int8_t)(-127 + 127 * (i - 248) / 8);
-    }
-
-    for (i = 0; i < 256; i++) {
-        wave_saw[i] = (int8_t)(127 - (254 * i / 255));
-    }
-
-    for (i = 0; i < 256; i++) {
-        if (i < 64)       wave_tri[i] = (int8_t)(127 * i / 64);
-        else if (i < 192) wave_tri[i] = (int8_t)(127 - 254 * (i - 64) / 128);
-        else              wave_tri[i] = (int8_t)(-127 + 127 * (i - 192) / 64);
-    }
+    OPL3_WriteReg(&opl_music.chip, reg, val);
 }
 
-static void mus_init_sine(void)
+/* Load GENMIDI lump from WAD */
+static void load_genmidi(void)
 {
-    /* Done in mus_init_tables */
-}
+    int lump;
+    byte *data;
+    int len;
 
-static int patch_to_inst(int patch)
-{
-    if (patch < 0)   return INST_DEFAULT;
-    if (patch <=  7) return INST_DEFAULT;
-    if (patch <= 15) return INST_DEFAULT;
-    if (patch <= 23) return INST_ORGAN;
-    if (patch <= 31) return INST_GUITAR;
-    if (patch <= 39) return INST_BASS;
-    if (patch <= 47) return INST_STRING;
-    if (patch <= 55) return INST_STRING;
-    if (patch <= 63) return INST_BRASS;
-    if (patch <= 71) return INST_LEAD;
-    if (patch <= 79) return INST_LEAD;
-    if (patch <= 87) return INST_LEAD;
-    if (patch <= 95) return INST_PAD;
-    if (patch <= 103) return INST_PAD;
-    if (patch <= 111) return INST_STRING;
-    if (patch <= 119) return INST_DEFAULT;
-    return INST_DEFAULT;
-}
+    opl_music.genmidi_loaded = 0;
 
-static int perc_note_to_inst(int note)
-{
-    if (note == 35 || note == 36) return INST_PERC_KICK;
-    if (note == 38 || note == 40) return INST_PERC_SNARE;
-    if (note == 42 || note == 44 || note == 46) return INST_PERC_HIHAT;
-    if (note >= 41 && note <= 48) return INST_PERC_TOM;
-    if (note >= 49 && note <= 57) return INST_PERC_CYMBAL;
-    return INST_PERC_HIHAT;
-}
-
-static void setup_voice_inst(mus_voice_t *v, int inst_type)
-{
-    v->inst_type = inst_type;
-    v->vib_phase = 0;
-    v->noise_state = 0;
-    v->noise_decay = 0;
-
-    switch (inst_type) {
-    case INST_BASS:
-        v->mod_step      = v->phase_step * 1;
-        v->mod_depth     = 180;
-        v->attack_rate   = 8;
-        v->decay_rate    = 3;
-        v->sustain_level = 200;
-        v->release_rate  = 6;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_LEAD:
-        v->mod_step      = v->phase_step * 2;
-        v->mod_depth     = 120;
-        v->attack_rate   = 12;
-        v->decay_rate    = 2;
-        v->sustain_level = 180;
-        v->release_rate  = 4;
-        v->vib_speed     = 300;
-        v->vib_depth     = 3;
-        break;
-
-    case INST_PAD:
-        v->mod_step      = v->phase_step * 3;
-        v->mod_depth     = 60;
-        v->attack_rate   = 2;
-        v->decay_rate    = 1;
-        v->sustain_level = 220;
-        v->release_rate  = 1;
-        v->vib_speed     = 200;
-        v->vib_depth     = 5;
-        break;
-
-    case INST_BRASS:
-        v->mod_step      = v->phase_step * 1;
-        v->mod_depth     = 200;
-        v->attack_rate   = 10;
-        v->decay_rate    = 3;
-        v->sustain_level = 190;
-        v->release_rate  = 5;
-        v->vib_speed     = 400;
-        v->vib_depth     = 2;
-        break;
-
-    case INST_STRING:
-        v->mod_step      = v->phase_step * 2;
-        v->mod_depth     = 40;
-        v->attack_rate   = 3;
-        v->decay_rate    = 1;
-        v->sustain_level = 210;
-        v->release_rate  = 2;
-        v->vib_speed     = 250;
-        v->vib_depth     = 4;
-        break;
-
-    case INST_ORGAN:
-        v->mod_step      = v->phase_step * 1;
-        v->mod_depth     = 80;
-        v->attack_rate   = 20;
-        v->decay_rate    = 1;
-        v->sustain_level = 240;
-        v->release_rate  = 8;
-        v->vib_speed     = 350;
-        v->vib_depth     = 2;
-        break;
-
-    case INST_GUITAR:
-        v->mod_step      = v->phase_step * 3;
-        v->mod_depth     = 150;
-        v->attack_rate   = 20;
-        v->decay_rate    = 4;
-        v->sustain_level = 140;
-        v->release_rate  = 5;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_PERC_KICK:
-        v->mod_step      = v->phase_step / 2;
-        v->mod_depth     = 255;
-        v->attack_rate   = 32;
-        v->decay_rate    = 8;
-        v->sustain_level = 0;
-        v->release_rate  = 8;
-        v->noise_state   = 12345;
-        v->noise_decay   = 256;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_PERC_SNARE:
-        v->mod_step      = v->phase_step * 7;
-        v->mod_depth     = 255;
-        v->attack_rate   = 32;
-        v->decay_rate    = 6;
-        v->sustain_level = 0;
-        v->release_rate  = 6;
-        v->noise_state   = 67890;
-        v->noise_decay   = 256;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_PERC_HIHAT:
-        v->mod_step      = v->phase_step * 13;
-        v->mod_depth     = 200;
-        v->attack_rate   = 32;
-        v->decay_rate    = 10;
-        v->sustain_level = 0;
-        v->release_rate  = 10;
-        v->noise_state   = 11111;
-        v->noise_decay   = 256;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_PERC_TOM:
-        v->mod_step      = v->phase_step * 2;
-        v->mod_depth     = 200;
-        v->attack_rate   = 32;
-        v->decay_rate    = 5;
-        v->sustain_level = 0;
-        v->release_rate  = 5;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    case INST_PERC_CYMBAL:
-        v->mod_step      = v->phase_step * 11;
-        v->mod_depth     = 180;
-        v->attack_rate   = 32;
-        v->decay_rate    = 2;
-        v->sustain_level = 60;
-        v->release_rate  = 2;
-        v->noise_state   = 33333;
-        v->noise_decay   = 256;
-        v->vib_speed     = 0;
-        v->vib_depth     = 0;
-        break;
-
-    default:
-        v->mod_step      = v->phase_step * 2;
-        v->mod_depth     = 100;
-        v->attack_rate   = 10;
-        v->decay_rate    = 3;
-        v->sustain_level = 180;
-        v->release_rate  = 4;
-        v->vib_speed     = 250;
-        v->vib_depth     = 2;
-        break;
+    lump = W_CheckNumForName("GENMIDI");
+    if (lump < 0) {
+        debug_log("GENMIDI lump not found!");
+        return;
     }
+
+    len = W_LumpLength(lump);
+    data = W_CacheLumpNum(lump, PU_STATIC);
+
+    if (len < GENMIDI_HEADER_SIZE + (int)sizeof(genmidi_instr_t) * GENMIDI_NUM_INSTRS) {
+        debug_logf("GENMIDI too small: %d bytes", len);
+        return;
+    }
+
+    /* Check header "#OPL_II#" */
+    if (memcmp(data, "#OPL_II#", 8) != 0) {
+        debug_log("GENMIDI bad header");
+        return;
+    }
+
+    opl_music.genmidi = (genmidi_instr_t *)(data + GENMIDI_HEADER_SIZE);
+    opl_music.genmidi_loaded = 1;
+
+    debug_logf("GENMIDI loaded: %d instruments", GENMIDI_NUM_INSTRS);
 }
 
-static int mus_find_free_voice(void)
+/* Setup OPL voice with GENMIDI instrument */
+static void opl_set_instrument(int voice, genmidi_voice_t *instr)
 {
-    int i;
-    for (i = 0; i < MUS_MAX_VOICES; i++) {
-        if (!mus_player.voices[i].active)
+    int slot_off = opl_slot_offsets[voice];
+    int chan_off = opl_chan_offsets[voice];
+
+    /* Modulator */
+    opl_write(0x20 + slot_off, instr->modulator.tremolo);
+    opl_write(0x40 + slot_off, instr->modulator.level);
+    opl_write(0x60 + slot_off, instr->modulator.attack);
+    opl_write(0x80 + slot_off, instr->modulator.sustain);
+    opl_write(0xE0 + slot_off, instr->modulator.waveform);
+
+    /* Carrier (slot + 3) */
+    opl_write(0x20 + slot_off + 3, instr->carrier.tremolo);
+    opl_write(0x40 + slot_off + 3, instr->carrier.level);
+    opl_write(0x60 + slot_off + 3, instr->carrier.attack);
+    opl_write(0x80 + slot_off + 3, instr->carrier.sustain);
+    opl_write(0xE0 + slot_off + 3, instr->carrier.waveform);
+
+    /* Feedback/connection */
+    opl_write(0xC0 + chan_off, instr->modulator.feedback | 0x30);
+}
+
+/* Set voice volume (carrier TL register) */
+static void opl_set_voice_volume(int voice, int note_vol, int chan_vol)
+{
+    int slot_off;
+    int total_vol;
+    int tl;
+    genmidi_instr_t *inst;
+    int mus_ch;
+    int patch;
+
+    slot_off = opl_slot_offsets[voice] + 3; /* carrier */
+
+    /* Combined volume: 0-127 each */
+    total_vol = (note_vol * chan_vol) / 127;
+
+    /* OPL TL: 0 = max volume, 63 = silent. Invert and scale */
+    tl = 63 - (total_vol * 63 / 127);
+    if (tl < 0) tl = 0;
+    if (tl > 63) tl = 63;
+
+    /* Get the original KSL bits from instrument */
+    mus_ch = opl_music.voices[voice].mus_channel;
+    patch = opl_music.channels[mus_ch].patch;
+
+    if (opl_music.genmidi_loaded && patch < GENMIDI_NUM_INSTRS) {
+        inst = &opl_music.genmidi[patch];
+        tl |= (inst->voices[0].carrier.scale & 0xC0);
+    }
+
+    opl_write(0x40 + slot_off, tl);
+}
+
+/* Key on a note */
+static void opl_key_on(int voice, int note)
+{
+    int chan_off = opl_chan_offsets[voice];
+    int octave, fnote;
+    uint16_t freq;
+
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+
+    octave = note / 12;
+    fnote  = note % 12;
+
+    if (octave > 7) octave = 7;
+
+    freq = opl_freq_table[fnote];
+
+    /* Write frequency low */
+    opl_write(0xA0 + chan_off, freq & 0xFF);
+    /* Write key-on + octave + freq high */
+    opl_write(0xB0 + chan_off, 0x20 | ((octave & 7) << 2) | ((freq >> 8) & 3));
+}
+
+/* Key off */
+static void opl_key_off(int voice)
+{
+    int chan_off = opl_chan_offsets[voice];
+    /* Read current B0 and clear key-on bit */
+    opl_write(0xB0 + chan_off, 0);
+}
+
+/* Find free voice or steal one */
+static int opl_alloc_voice(int mus_channel, int priority)
+{
+    int i, best;
+    uint32_t oldest;
+
+    /* Find free voice */
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        if (!opl_music.voices[i].active)
             return i;
     }
-    for (i = 0; i < MUS_MAX_VOICES; i++) {
-        if (mus_player.voices[i].env_state >= 3)
-            return i;
-    }
-    return 0;
-}
 
-static void mus_note_on(int channel, int note, int volume)
-{
-    int vi, inst;
-    mus_voice_t *v;
-
-    if (note < 0 || note > 127) return;
-
-    vi = mus_find_free_voice();
-    v = &mus_player.voices[vi];
-    memset(v, 0, sizeof(*v));
-
-    v->active     = 1;
-    v->note       = note;
-    v->channel    = channel;
-    v->volume     = (volume >= 0) ? volume : mus_player.channels[channel].volume;
-    v->phase_acc  = 0;
-    v->mod_phase  = 0;
-    v->env_level  = 0;
-    v->env_state  = 0;
-    v->env_counter = 0;
-
-    if (channel == 15) {
-        inst = perc_note_to_inst(note);
-        switch (inst) {
-        case INST_PERC_KICK:   v->phase_step = mus_note_step[36]; break;
-        case INST_PERC_SNARE:  v->phase_step = mus_note_step[60]; break;
-        case INST_PERC_HIHAT:  v->phase_step = mus_note_step[80]; break;
-        case INST_PERC_TOM:    v->phase_step = mus_note_step[note < 128 ? note : 48]; break;
-        case INST_PERC_CYMBAL: v->phase_step = mus_note_step[75]; break;
-        default:               v->phase_step = mus_note_step[60]; break;
+    /* Steal lowest priority / oldest */
+    best = 0;
+    oldest = 0xFFFFFFFF;
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        if (opl_music.voices[i].age < oldest) {
+            oldest = opl_music.voices[i].age;
+            best = i;
         }
+    }
+
+    /* Turn off stolen voice */
+    opl_key_off(best);
+    opl_music.voices[best].active = 0;
+
+    return best;
+}
+
+/* MUS note on */
+static void mus_opl_note_on(int channel, int note, int volume)
+{
+    int voice, patch, midi_note;
+    genmidi_instr_t *inst;
+
+    if (!opl_music.genmidi_loaded) return;
+
+    patch = opl_music.channels[channel].patch;
+
+    /* Percussion: channel 15 */
+    if (channel == PERCUSSION_CHAN) {
+        if (note < 35 || note > 81) return;
+        patch = 128 + note - 35;  /* Percussion instruments start at 128 in GENMIDI */
+    }
+
+    if (patch < 0 || patch >= GENMIDI_NUM_INSTRS) return;
+
+    inst = &opl_music.genmidi[patch];
+
+    voice = opl_alloc_voice(channel, volume);
+
+    /* Setup instrument on OPL */
+    opl_set_instrument(voice, &inst->voices[0]);
+
+    /* Note mapping */
+    if (inst->flags & GENMIDI_FLAG_FIXED) {
+        midi_note = inst->fixed_note;
     } else {
-        v->phase_step = mus_note_step[note];
-        inst = patch_to_inst(mus_player.channels[channel].patch);
+        midi_note = note;
+        /* Apply base note offset */
+        midi_note += (int16_t)inst->voices[0].base_note_offset;
     }
 
-    setup_voice_inst(v, inst);
+    if (midi_note < 0) midi_note = 0;
+    if (midi_note > 127) midi_note = 127;
+
+    /* Set volume */
+    if (volume < 0) volume = opl_music.channels[channel].volume;
+    opl_set_voice_volume(voice, volume, opl_music.channels[channel].volume);
+
+    /* Key on */
+    opl_key_on(voice, midi_note);
+
+    /* Track voice */
+    opl_music.voices[voice].active      = 1;
+    opl_music.voices[voice].mus_channel = channel;
+    opl_music.voices[voice].note        = note;
+    opl_music.voices[voice].priority    = volume;
+    opl_music.voices[voice].age         = opl_music.voice_age++;
 }
 
-static void mus_note_off(int channel, int note)
+/* MUS note off */
+static void mus_opl_note_off(int channel, int note)
 {
     int i;
-    for (i = 0; i < MUS_MAX_VOICES; i++) {
-        mus_voice_t *v = &mus_player.voices[i];
-        if (v->active && v->channel == channel && v->note == note) {
-            if (v->env_state < 3) {
-                v->env_state = 3;
-                v->env_counter = 0;
-            }
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        if (opl_music.voices[i].active &&
+            opl_music.voices[i].mus_channel == channel &&
+            opl_music.voices[i].note == note) {
+            opl_key_off(i);
+            opl_music.voices[i].active = 0;
         }
     }
 }
 
-static void mus_all_notes_off(int channel)
+/* All notes off on channel */
+static void mus_opl_all_off(int channel)
 {
     int i;
-    for (i = 0; i < MUS_MAX_VOICES; i++) {
-        if (mus_player.voices[i].channel == channel) {
-            mus_player.voices[i].env_state = 3;
-            mus_player.voices[i].env_counter = 0;
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        if (opl_music.voices[i].mus_channel == channel &&
+            opl_music.voices[i].active) {
+            opl_key_off(i);
+            opl_music.voices[i].active = 0;
         }
     }
 }
 
-static byte mus_read_byte(void)
+/* Read byte from MUS data */
+static byte mus_rb(void)
 {
-    if (mus_player.pos >= mus_player.data_len)
-        return 0;
-    return mus_player.data[mus_player.pos++];
+    if (opl_music.mus_pos >= opl_music.mus_len) return 0;
+    return opl_music.mus_data[opl_music.mus_pos++];
 }
 
+/* Process one MUS event */
 static void mus_process_event(void)
 {
-    byte event_byte, channel, event_type;
-    int  last, i;
+    byte ev, channel, type;
+    int last, i;
 
-    if (!mus_player.playing) return;
-    if (mus_player.pos >= mus_player.score_start + mus_player.score_len) {
-        if (mus_player.looping) {
-            mus_player.pos = mus_player.score_start;
-            for (i = 0; i < MUS_MAX_VOICES; i++)
-                mus_player.voices[i].active = 0;
+    if (!opl_music.playing) return;
+    if (opl_music.mus_pos >= opl_music.score_start + opl_music.score_len) {
+        if (opl_music.looping) {
+            opl_music.mus_pos = opl_music.score_start;
+            for (i = 0; i < OPL_NUM_VOICES; i++) {
+                opl_key_off(i);
+                opl_music.voices[i].active = 0;
+            }
         } else {
-            mus_player.playing = 0;
+            opl_music.playing = 0;
         }
         return;
     }
 
-    event_byte = mus_read_byte();
-    channel    = event_byte & 0x0F;
-    event_type = (event_byte >> 4) & 0x07;
-    last       = event_byte & 0x80;
+    ev      = mus_rb();
+    channel = ev & 0x0F;
+    type    = (ev >> 4) & 0x07;
+    last    = ev & 0x80;
 
-    switch (event_type) {
-    case 0: {
-        byte note = mus_read_byte();
-        mus_note_off(channel, note & 0x7F);
+    switch (type) {
+    case MUS_EV_RELEASE: {
+        byte note = mus_rb();
+        mus_opl_note_off(channel, note & 0x7F);
         break;
     }
-    case 1: {
-        byte note_byte = mus_read_byte();
-        int  note = note_byte & 0x7F;
-        int  vol = -1;
-        if (note_byte & 0x80) {
-            vol = mus_read_byte() & 0x7F;
-            mus_player.channels[channel].volume = vol;
+    case MUS_EV_PRESS: {
+        byte nb = mus_rb();
+        int note = nb & 0x7F;
+        int vol = -1;
+        if (nb & 0x80) {
+            vol = mus_rb() & 0x7F;
+            opl_music.channels[channel].volume = vol;
         }
-        mus_note_on(channel, note, vol);
+        mus_opl_note_on(channel, note, vol);
         break;
     }
-    case 2: {
-        mus_read_byte();
+    case MUS_EV_PITCH: {
+        byte pb = mus_rb();
+        opl_music.channels[channel].pitch_bend = pb;
         break;
     }
-    case 3: {
-        byte sys = mus_read_byte();
-        if (sys == 10 || sys == 11 || sys == 14) {
-            mus_all_notes_off(channel);
-        }
+    case MUS_EV_SYS: {
+        byte sys = mus_rb();
+        if (sys == 10 || sys == 11 || sys == 14)
+            mus_opl_all_off(channel);
         break;
     }
-    case 4: {
-        byte ctrl = mus_read_byte();
-        byte val  = mus_read_byte();
+    case MUS_EV_CTRL: {
+        byte ctrl = mus_rb();
+        byte val  = mus_rb();
         if (ctrl == 0) {
-            mus_player.channels[channel].patch = val;
+            opl_music.channels[channel].patch = val;
         } else if (ctrl == 3) {
-            mus_player.channels[channel].volume = val & 0x7F;
-            for (i = 0; i < MUS_MAX_VOICES; i++) {
-                if (mus_player.voices[i].active &&
-                    mus_player.voices[i].channel == channel) {
-                    mus_player.voices[i].volume = val & 0x7F;
+            opl_music.channels[channel].volume = val & 0x7F;
+            /* Update playing voices volume */
+            for (i = 0; i < OPL_NUM_VOICES; i++) {
+                if (opl_music.voices[i].active &&
+                    opl_music.voices[i].mus_channel == channel) {
+                    opl_set_voice_volume(i, opl_music.voices[i].priority,
+                                         val & 0x7F);
                 }
             }
         }
         break;
     }
-    case 5:
-    case 6:
-        if (mus_player.looping) {
-            mus_player.pos = mus_player.score_start;
-            for (i = 0; i < MUS_MAX_VOICES; i++)
-                mus_player.voices[i].active = 0;
+    case MUS_EV_END:
+    case MUS_EV_END2:
+        if (opl_music.looping) {
+            opl_music.mus_pos = opl_music.score_start;
+            for (i = 0; i < OPL_NUM_VOICES; i++) {
+                opl_key_off(i);
+                opl_music.voices[i].active = 0;
+            }
         } else {
-            mus_player.playing = 0;
+            opl_music.playing = 0;
         }
         return;
     default:
@@ -895,292 +830,127 @@ static void mus_process_event(void)
         int delay = 0;
         byte db;
         do {
-            db = mus_read_byte();
+            db = mus_rb();
             delay = (delay << 7) | (db & 0x7F);
         } while (db & 0x80);
-        mus_player.delay_left = delay;
+        opl_music.delay_left = delay;
     }
 }
 
-static void mus_tick(void)
+static void mus_opl_tick(void)
 {
-    if (!mus_player.playing) return;
-
-    while (mus_player.delay_left <= 0 && mus_player.playing) {
+    if (!opl_music.playing) return;
+    while (opl_music.delay_left <= 0 && opl_music.playing)
         mus_process_event();
-    }
-
-    if (mus_player.delay_left > 0)
-        mus_player.delay_left--;
+    if (opl_music.delay_left > 0)
+        opl_music.delay_left--;
 }
 
-/* FM synthesis mixing */
-static void mus_mix_into(int32_t *accum_buf, int nsamples)
+/* Generate music samples via OPL3 and resample to 48kHz */
+static void opl_mix_into(int32_t *accum_buf, int nsamples)
 {
-    int i, s;
+    int s;
     int mvol;
 
-    if (!mus_player.playing) return;
+    if (!opl_music.playing) return;
 
-    mvol = mus_player.mus_volume;
+    mvol = opl_music.music_volume;
     if (mvol <= 0) return;
 
     for (s = 0; s < nsamples; s++) {
-        int32_t sample = 0;
-
-        mus_player.tick_counter--;
-        if (mus_player.tick_counter <= 0) {
-            mus_player.tick_counter = mus_player.tick_samples;
-            mus_tick();
+        /* Advance MUS tick timer (at 48kHz output rate) */
+        opl_music.tick_counter--;
+        if (opl_music.tick_counter <= 0) {
+            opl_music.tick_counter = opl_music.tick_samples;
+            mus_opl_tick();
         }
 
-        for (i = 0; i < MUS_MAX_VOICES; i++) {
-            mus_voice_t *v = &mus_player.voices[i];
-            int mod_out, carrier_idx, carrier_out;
-            int out, chan_vol;
-
-            if (!v->active) continue;
-
-            /* ADSR Envelope */
-            switch (v->env_state) {
-            case 0:
-                v->env_level += v->attack_rate;
-                if (v->env_level >= 256) {
-                    v->env_level = 256;
-                    v->env_state = 1;
-                }
-                break;
-            case 1:
-                v->env_level -= v->decay_rate;
-                if (v->env_level <= v->sustain_level) {
-                    v->env_level = v->sustain_level;
-                    v->env_state = 2;
-                }
-                break;
-            case 2:
-                break;
-            case 3:
-                v->env_level -= v->release_rate;
-                if (v->env_level <= 0) {
-                    v->env_level = 0;
-                    v->active = 0;
-                    continue;
-                }
-                break;
-            default:
-                v->active = 0;
-                continue;
-            }
-
-            chan_vol = mus_player.channels[v->channel].volume;
-            if (chan_vol <= 0) continue;
-
-            /* Percussion with noise */
-            if (v->inst_type >= 100 && v->noise_state) {
-                int noise;
-                int idx;
-
-                v->noise_state ^= (v->noise_state << 13);
-                v->noise_state ^= (v->noise_state >> 17);
-                v->noise_state ^= (v->noise_state << 5);
-
-                noise = (int)(v->noise_state & 0xFF) - 128;
-
-                idx = (v->phase_acc >> 8) & 0xFF;
-                mod_out = wave_sine[(v->mod_phase >> 8) & 0xFF];
-                carrier_idx = (idx + ((mod_out * v->mod_depth) >> 8)) & 0xFF;
-
-                if (v->inst_type == INST_PERC_KICK) {
-                    out = wave_sine[carrier_idx];
-                    out = (out * 3 + noise) / 4;
-                } else if (v->inst_type == INST_PERC_SNARE) {
-                    out = (noise * 3 + wave_sine[carrier_idx]) / 4;
-                } else if (v->inst_type == INST_PERC_HIHAT ||
-                           v->inst_type == INST_PERC_CYMBAL) {
-                    out = noise;
-                } else {
-                    out = (wave_sine[carrier_idx] + noise) / 2;
-                }
-
-                if (v->noise_decay > 0) {
-                    v->noise_decay -= 2;
-                    if (v->noise_decay < 0) v->noise_decay = 0;
-                }
-
-                out = (out * v->volume * v->env_level) >> 9;
-                out = (out * chan_vol) >> 7;
-
-                v->phase_acc += v->phase_step;
-                v->mod_phase += v->mod_step;
-
-                sample += out;
-                continue;
-            }
-
-            /* FM Synthesis for melodic instruments */
-            {
-                int effective_step = v->phase_step;
-
-                if (v->vib_depth > 0 && v->vib_speed > 0) {
-                    int vib_idx = (v->vib_phase >> 8) & 0xFF;
-                    int vib_mod = (wave_sine[vib_idx] * v->vib_depth) >> 7;
-                    effective_step += (v->phase_step * vib_mod) >> 10;
-                    v->vib_phase += v->vib_speed;
-                }
-
-                mod_out = wave_sine[(v->mod_phase >> 8) & 0xFF];
-
-                carrier_idx = ((v->phase_acc >> 8) +
-                              ((mod_out * v->mod_depth) >> 8)) & 0xFF;
-
-                switch (v->inst_type) {
-                case INST_ORGAN:
-                    carrier_out = wave_sine[carrier_idx] * 3;
-                    carrier_out += wave_sine[(carrier_idx * 2) & 0xFF] * 2;
-                    carrier_out += wave_sine[(carrier_idx * 4) & 0xFF];
-                    carrier_out /= 6;
-                    break;
-
-                case INST_GUITAR:
-                    carrier_out = (wave_saw[carrier_idx] * 2 +
-                                  wave_square[carrier_idx]) / 3;
-                    break;
-
-                case INST_BRASS:
-                    carrier_out = (wave_square[carrier_idx] * 2 +
-                                  wave_sine[carrier_idx]) / 3;
-                    break;
-
-                case INST_STRING:
-                    carrier_out = (wave_saw[carrier_idx] * 3 +
-                                  wave_sine[carrier_idx]) / 4;
-                    break;
-
-                case INST_BASS:
-                    carrier_out = (wave_tri[carrier_idx] * 2 +
-                                  wave_sine[carrier_idx]) / 3;
-                    break;
-
-                case INST_PAD:
-                    carrier_out = (wave_sine[carrier_idx] * 3 +
-                                  wave_tri[carrier_idx]) / 4;
-                    break;
-
-                case INST_LEAD:
-                    carrier_out = (wave_saw[carrier_idx] * 2 +
-                                  wave_square[carrier_idx] +
-                                  wave_sine[carrier_idx]) / 4;
-                    break;
-
-                default:
-                    carrier_out = wave_sine[carrier_idx];
-                    break;
-                }
-
-                out = (carrier_out * v->volume * v->env_level) >> 9;
-                out = (out * chan_vol) >> 7;
-
-                v->phase_acc += effective_step;
-                v->mod_phase += v->mod_step;
-
-                sample += out;
-            }
+        /* Generate OPL samples with resampling 49716 -> 48000 */
+        opl_music.resample_acc += AUDIO_RATE;
+        while (opl_music.resample_acc >= OUTPUT_RATE) {
+            int16_t buf[2];
+            OPL3_Generate(&opl_music.chip, buf);
+            opl_music.last_sample_l = buf[0];
+            opl_music.last_sample_r = buf[1];
+            opl_music.resample_acc -= OUTPUT_RATE;
         }
 
-        sample = (sample * mvol) / 15;
-
-        accum_buf[s * 2 + 0] += sample;
-        accum_buf[s * 2 + 1] += sample;
+        /* Apply music volume and add to accumulator */
+        accum_buf[s * 2 + 0] += (opl_music.last_sample_l * mvol) / 15;
+        accum_buf[s * 2 + 1] += (opl_music.last_sample_r * mvol) / 15;
     }
 }
 
 /* ================================================================
-   Audio mixing - SFX + Music combined
+   Combined audio mixing
    ================================================================ */
 static void mix_into(int16_t *out, int nsamples)
 {
     int i, ch;
     int32_t accum[AUDIO_GRANULARITY * 2];
-    int     mvol;
+    int mvol;
 
     memset(accum, 0, nsamples * 2 * sizeof(int32_t));
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
 
     mvol = sfx_master_vol;
-    if (mvol < 0)  mvol = 0;
+    if (mvol < 0) mvol = 0;
     if (mvol > 15) mvol = 15;
 
     for (i = 0; i < nsamples; i++) {
-        int32_t accum_l = 0, accum_r = 0;
-
+        int32_t al = 0, ar = 0;
         for (ch = 0; ch < MIX_CHANNELS; ch++) {
             mix_channel_t *c = &mix_ch[ch];
             int pos, sample;
-
             if (!c->active || !c->data) continue;
-
             pos = c->pos_fixed >> 16;
-            if (pos >= c->length) {
-                c->active = 0;
-                continue;
-            }
-
+            if (pos >= c->length) { c->active = 0; continue; }
             sample = ((int)c->data[pos] - 128) * 256;
-
-            accum_l += (sample * c->vol_left)  >> 8;
-            accum_r += (sample * c->vol_right) >> 8;
-
+            al += (sample * c->vol_left) >> 8;
+            ar += (sample * c->vol_right) >> 8;
             c->pos_fixed += c->step_fixed;
         }
-
-        accum_l = (accum_l * mvol) / 15;
-        accum_r = (accum_r * mvol) / 15;
-
-        accum[i * 2 + 0] += accum_l;
-        accum[i * 2 + 1] += accum_r;
+        accum[i * 2 + 0] += (al * mvol) / 15;
+        accum[i * 2 + 1] += (ar * mvol) / 15;
     }
 
     sceKernelUnlockMutex(sfx_mutex, 1);
 
+    /* Mix OPL music */
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        mus_mix_into(accum, nsamples);
+        opl_mix_into(accum, nsamples);
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 
     for (i = 0; i < nsamples * 2; i++) {
         int32_t v = accum[i];
-        if (v >  32767) v =  32767;
+        if (v > 32767) v = 32767;
         if (v < -32768) v = -32768;
         out[i] = (int16_t)v;
     }
 }
 
-/* --- Thread audio --- */
 static int sfx_thread_func(SceSize args, void *argp)
 {
     (void)args; (void)argp;
     debug_log("Audio thread started");
-
     while (sfx_running) {
         int16_t *buf = sfx_buf[sfx_buf_idx];
         mix_into(buf, AUDIO_GRANULARITY);
         sceAudioOutOutput(sfx_port, buf);
         sfx_buf_idx ^= 1;
     }
-
     debug_log("Audio thread exiting");
     return 0;
 }
 
 static void start_audio_system(void)
 {
-    int ret;
-    int vols[2];
+    int ret, vols[2];
 
     if (audio_ready) return;
-
     debug_log("Starting audio system...");
 
     memset(mix_ch, 0, sizeof(mix_ch));
@@ -1189,129 +959,69 @@ static void start_audio_system(void)
     sfx_cache_count = 0;
     sfx_buf_idx = 0;
 
-    mus_init_tables();
-    mus_init_sine();
-    memset(&mus_player, 0, sizeof(mus_player));
-    mus_player.mus_volume = 8;
-    mus_player.tick_samples = AUDIO_RATE / 140;
-    mus_player.tick_counter = mus_player.tick_samples;
+    /* Init OPL3 */
+    memset(&opl_music, 0, sizeof(opl_music));
+    OPL3_Reset(&opl_music.chip, AUDIO_RATE);
+    opl_music.music_volume = 8;
+    opl_music.tick_samples = OUTPUT_RATE / 140;
+    opl_music.tick_counter = opl_music.tick_samples;
+
+    /* Enable OPL3 waveform select */
+    opl_write(0x01, 0x20);
 
     sfx_mutex = sceKernelCreateMutex("sfx_mutex", 0, 0, NULL);
-    if (sfx_mutex < 0) {
-        debug_logf("CreateMutex sfx failed: 0x%08X", sfx_mutex);
-        return;
-    }
+    if (sfx_mutex < 0) return;
 
     mus_mutex = sceKernelCreateMutex("mus_mutex", 0, 0, NULL);
-    if (mus_mutex < 0) {
-        debug_logf("CreateMutex mus failed: 0x%08X", mus_mutex);
-    }
 
-    sfx_port = sceAudioOutOpenPort(
-        SCE_AUDIO_OUT_PORT_TYPE_BGM,
-        AUDIO_GRANULARITY,
-        AUDIO_RATE,
-        SCE_AUDIO_OUT_MODE_STEREO
-    );
-
+    sfx_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
+        AUDIO_GRANULARITY, OUTPUT_RATE, SCE_AUDIO_OUT_MODE_STEREO);
+    if (sfx_port < 0)
+        sfx_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
+            AUDIO_GRANULARITY, OUTPUT_RATE, SCE_AUDIO_OUT_MODE_STEREO);
     if (sfx_port < 0) {
-        debug_logf("BGM port failed: 0x%08X, trying MAIN...", sfx_port);
-        sfx_port = sceAudioOutOpenPort(
-            SCE_AUDIO_OUT_PORT_TYPE_MAIN,
-            AUDIO_GRANULARITY,
-            AUDIO_RATE,
-            SCE_AUDIO_OUT_MODE_STEREO
-        );
-    }
-
-    if (sfx_port < 0) {
-        debug_logf("All audio ports failed: 0x%08X", sfx_port);
-        sceKernelDeleteMutex(sfx_mutex);
-        sfx_mutex = -1;
+        sceKernelDeleteMutex(sfx_mutex); sfx_mutex = -1;
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
-    debug_logf("Audio port opened: %d", sfx_port);
-
     vols[0] = SCE_AUDIO_VOLUME_0DB;
     vols[1] = SCE_AUDIO_VOLUME_0DB;
-    ret = sceAudioOutSetVolume(sfx_port,
+    sceAudioOutSetVolume(sfx_port,
         SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vols);
-    debug_logf("SetVolume: 0x%08X", ret);
-
-    {
-        int t;
-        int16_t *testbuf = sfx_buf[0];
-        for (t = 0; t < AUDIO_GRANULARITY; t++) {
-            int16_t val = (t % 64 < 32) ? 8000 : -8000;
-            testbuf[t * 2 + 0] = val;
-            testbuf[t * 2 + 1] = val;
-        }
-        ret = sceAudioOutOutput(sfx_port, testbuf);
-        debug_logf("Test beep output: 0x%08X", ret);
-        memset(sfx_buf[1], 0, sizeof(sfx_buf[1]));
-        sceAudioOutOutput(sfx_port, sfx_buf[1]);
-    }
 
     sfx_running = 1;
-    sfx_thread_id = sceKernelCreateThread(
-        "doom_sfx",
-        sfx_thread_func,
-        0x10000100,
-        0x10000,
-        0, 0, NULL
-    );
-
+    sfx_thread_id = sceKernelCreateThread("doom_audio",
+        sfx_thread_func, 0x10000100, 0x10000, 0, 0, NULL);
     if (sfx_thread_id < 0) {
-        debug_logf("CreateThread failed: 0x%08X", sfx_thread_id);
         sfx_running = 0;
-        sceAudioOutReleasePort(sfx_port);
-        sfx_port = -1;
-        sceKernelDeleteMutex(sfx_mutex);
-        sfx_mutex = -1;
+        sceAudioOutReleasePort(sfx_port); sfx_port = -1;
+        sceKernelDeleteMutex(sfx_mutex); sfx_mutex = -1;
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
     ret = sceKernelStartThread(sfx_thread_id, 0, NULL);
     if (ret < 0) {
-        debug_logf("StartThread failed: 0x%08X", ret);
         sfx_running = 0;
-        sceKernelDeleteThread(sfx_thread_id);
-        sfx_thread_id = -1;
-        sceAudioOutReleasePort(sfx_port);
-        sfx_port = -1;
-        sceKernelDeleteMutex(sfx_mutex);
-        sfx_mutex = -1;
+        sceKernelDeleteThread(sfx_thread_id); sfx_thread_id = -1;
+        sceAudioOutReleasePort(sfx_port); sfx_port = -1;
+        sceKernelDeleteMutex(sfx_mutex); sfx_mutex = -1;
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
 
     audio_ready = 1;
-    debug_log("Audio system fully initialized with FM music!");
+    debug_log("Audio system with OPL3 initialized!");
 }
 
 /* ================================================================
    DG interface
    ================================================================ */
-void DG_Init(void)
-{
-    debug_log("DG_Init");
-    base_time = get_ms();
-}
-
+void DG_Init(void) { base_time = get_ms(); }
 void DG_DrawFrame(void) {}
-
-void DG_SleepMs(uint32_t ms)
-{
-    sceKernelDelayThread(ms * 1000);
-}
-
-uint32_t DG_GetTicksMs(void)
-{
-    return get_ms() - base_time;
-}
+void DG_SleepMs(uint32_t ms) { sceKernelDelayThread(ms * 1000); }
+uint32_t DG_GetTicksMs(void) { return get_ms() - base_time; }
 
 int DG_GetKey(int *pressed, unsigned char *key)
 {
@@ -1325,7 +1035,7 @@ int DG_GetKey(int *pressed, unsigned char *key)
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
 /* ================================================================
-   I_* base
+   I_* stubs
    ================================================================ */
 void I_Init(void) {}
 
@@ -1344,18 +1054,15 @@ void I_Quit(void)
 
 void I_Error(char *error, ...)
 {
-    char buf[512];
-    va_list args;
-    va_start(args, error);
-    vsnprintf(buf, sizeof(buf), error, args);
-    va_end(args);
+    char buf[512]; va_list a;
+    va_start(a, error); vsnprintf(buf, sizeof(buf), error, a); va_end(a);
     debug_log(buf);
     sfx_running = 0;
     if (fb_base) { show_color(0xFF0000FF); sceKernelDelayThread(5000000); }
     sceKernelExitProcess(0);
 }
 
-void I_WaitVBL(int count) { sceKernelDelayThread(count * 14286); }
+void I_WaitVBL(int c) { sceKernelDelayThread(c * 14286); }
 
 int I_GetTime(void)
 {
@@ -1367,41 +1074,30 @@ void I_Sleep(int ms) { sceKernelDelayThread(ms * 1000); }
 
 byte *I_ZoneBase(int *size)
 {
-    byte *ptr;
+    byte *p;
     *size = 16 * 1024 * 1024;
-    ptr = (byte *)malloc(*size);
-    if (!ptr) { *size = 8 * 1024 * 1024; ptr = (byte *)malloc(*size); }
-    debug_logf("ZoneBase: %d at %p", *size, ptr);
-    return ptr;
+    p = (byte *)malloc(*size);
+    if (!p) { *size = 8 * 1024 * 1024; p = (byte *)malloc(*size); }
+    return p;
 }
 
-void I_Tactile(int on, int off, int total)
-    { (void)on; (void)off; (void)total; }
+void I_Tactile(int a, int b, int c) { (void)a; (void)b; (void)c; }
 int I_ConsoleStdout(void) { return 0; }
-boolean I_GetMemoryValue(unsigned int offset, void *value, int size)
-    { (void)offset; (void)value; (void)size; return 0; }
-void I_AtExit(void (*func)(void), boolean run_on_error)
-    { (void)func; (void)run_on_error; }
-void I_PrintBanner(const char *msg)       { (void)msg; }
-void I_PrintDivider(void)                 {}
-void I_PrintStartupBanner(const char *g)  { (void)g; }
-void I_DisplayFPSDots(boolean d)          { (void)d; }
-void I_CheckIsScreensaver(void)           {}
-void I_GraphicsCheckCommandLine(void)     {}
+boolean I_GetMemoryValue(unsigned int o, void *v, int s) { return 0; }
+void I_AtExit(void (*f)(void), boolean r) { (void)f; (void)r; }
+void I_PrintBanner(const char *m) { (void)m; }
+void I_PrintDivider(void) {}
+void I_PrintStartupBanner(const char *g) { (void)g; }
+void I_DisplayFPSDots(boolean d) { (void)d; }
+void I_CheckIsScreensaver(void) {}
+void I_GraphicsCheckCommandLine(void) {}
 void I_SetGrabMouseCallback(void (*f)(boolean g)) { (void)f; }
-
-int I_GetTime_RealTime(void)
-{
-    uint32_t ms = get_ms() - base_time;
-    return (int)(ms * TICRATE / 1000);
-}
-
+int I_GetTime_RealTime(void) { return I_GetTime(); }
 int I_GetTimeMS(void) { return (int)(get_ms() - base_time); }
 
 void I_InitTimer(void)
 {
     base_time = get_ms();
-    debug_logf("I_InitTimer: base=%u", base_time);
 }
 
 /* ================================================================
@@ -1410,21 +1106,16 @@ void I_InitTimer(void)
 void I_InitGraphics(void)
 {
     int i;
-    debug_log("I_InitGraphics");
     I_VideoBuffer = (byte *)calloc(SCREENWIDTH * SCREENHEIGHT, 1);
     for (i = 0; i < 256; i++)
-        cmap[i] = 0xFF000000u | ((uint32_t)i << 16)
-                               | ((uint32_t)i << 8)
-                               |  (uint32_t)i;
+        cmap[i] = 0xFF000000u | ((uint32_t)i << 16) | ((uint32_t)i << 8) | i;
 }
 
-void I_SetPalette(byte *doompalette)
+void I_SetPalette(byte *pal)
 {
     int i;
     for (i = 0; i < 256; i++) {
-        uint32_t r = doompalette[i * 3 + 0];
-        uint32_t g = doompalette[i * 3 + 1];
-        uint32_t b = doompalette[i * 3 + 2];
+        uint32_t r = pal[i*3+0], g = pal[i*3+1], b = pal[i*3+2];
         cmap[i] = 0xFF000000u | (b << 16) | (g << 8) | r;
     }
 }
@@ -1432,56 +1123,53 @@ void I_SetPalette(byte *doompalette)
 void I_FinishUpdate(void)
 {
     uint32_t *dst;
-    int x, y, step_x, step_y, src_y_fixed;
+    int x, y, step_x, step_y, sy_f;
     SceDisplayFrameBuf dfb;
 
     if (!display_ready || !I_VideoBuffer || !fb_base) return;
 
-    dst    = (uint32_t *)fb_base;
-    step_x = (SCREENWIDTH  << 16) / VITA_W;
+    dst = (uint32_t *)fb_base;
+    step_x = (SCREENWIDTH << 16) / VITA_W;
     step_y = (SCREENHEIGHT << 16) / VITA_H;
 
-    src_y_fixed = 0;
+    sy_f = 0;
     for (y = 0; y < VITA_H; y++) {
-        int srcy = src_y_fixed >> 16;
-        uint32_t *dst_row;
-        byte     *src_row;
-        int       src_x_fixed;
-
-        if (srcy >= SCREENHEIGHT) srcy = SCREENHEIGHT - 1;
-        dst_row = dst + y * 960;
-        src_row = I_VideoBuffer + srcy * SCREENWIDTH;
-        src_x_fixed = 0;
+        int sy = sy_f >> 16;
+        uint32_t *dr; byte *sr; int sx_f;
+        if (sy >= SCREENHEIGHT) sy = SCREENHEIGHT - 1;
+        dr = dst + y * 960;
+        sr = I_VideoBuffer + sy * SCREENWIDTH;
+        sx_f = 0;
         for (x = 0; x < VITA_W; x++) {
-            int srcx = src_x_fixed >> 16;
-            if (srcx >= SCREENWIDTH) srcx = SCREENWIDTH - 1;
-            dst_row[x] = cmap[src_row[srcx]];
-            src_x_fixed += step_x;
+            int sx = sx_f >> 16;
+            if (sx >= SCREENWIDTH) sx = SCREENWIDTH - 1;
+            dr[x] = cmap[sr[sx]];
+            sx_f += step_x;
         }
-        src_y_fixed += step_y;
+        sy_f += step_y;
     }
 
     memset(&dfb, 0, sizeof(dfb));
-    dfb.size        = sizeof(dfb);
-    dfb.base        = fb_base;
-    dfb.pitch       = 960;
+    dfb.size = sizeof(dfb);
+    dfb.base = fb_base;
+    dfb.pitch = 960;
     dfb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
-    dfb.width       = 960;
-    dfb.height      = 544;
+    dfb.width = 960;
+    dfb.height = 544;
     sceDisplaySetFrameBuf(&dfb, SCE_DISPLAY_SETBUF_NEXTFRAME);
     sceDisplayWaitVblankStart();
     frame_count++;
 }
 
 void I_ShutdownGraphics(void) {}
-void I_StartFrame(void)       {}
+void I_StartFrame(void) {}
 
 void I_StartTic(void)
 {
     event_t event;
     do_poll_input();
     while (kq_r != kq_w) {
-        event.type  = kq[kq_r].pressed ? ev_keydown : ev_keyup;
+        event.type = kq[kq_r].pressed ? ev_keydown : ev_keyup;
         event.data1 = kq[kq_r].key;
         event.data2 = kq[kq_r].key;
         event.data3 = 0;
@@ -1491,158 +1179,98 @@ void I_StartTic(void)
 }
 
 void I_UpdateNoBlit(void) {}
-void I_ReadScreen(byte *scr)
-{
+void I_ReadScreen(byte *scr) {
     if (I_VideoBuffer) memcpy(scr, I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT);
 }
-void I_EnableLoadingDisk(void)      {}
-void I_BeginRead(void)              {}
-void I_EndRead(void)                {}
-void I_SetWindowTitle(char *title)  { (void)title; }
-void I_BindVideoVariables(void)     {}
-int  I_GetPaletteIndex(int r, int g, int b)
-    { (void)r; (void)g; (void)b; return 0; }
+void I_EnableLoadingDisk(void) {}
+void I_BeginRead(void) {}
+void I_EndRead(void) {}
+void I_SetWindowTitle(char *t) { (void)t; }
+void I_BindVideoVariables(void) {}
+int I_GetPaletteIndex(int r, int g, int b) { return 0; }
 void I_InitScale(void) {}
 
-/* Input stubs */
-void I_InitInput(void)          {}
-void I_ShutdownInput(void)      {}
-void I_InitJoystick(void)       {}
-void I_ShutdownJoystick(void)   {}
-void I_UpdateJoystick(void)     {}
+void I_InitInput(void) {}
+void I_ShutdownInput(void) {}
+void I_InitJoystick(void) {}
+void I_ShutdownJoystick(void) {}
+void I_UpdateJoystick(void) {}
 void I_BindJoystickVariables(void) {}
 
 /* ================================================================
-   SOUND
+   SOUND interface
    ================================================================ */
-
-void I_SetChannels(void)
-{
-    debug_log("I_SetChannels");
-}
+void I_SetChannels(void) {}
 
 void I_SetSfxVolume(int volume)
 {
     sfx_master_vol = volume;
-    debug_logf("I_SetSfxVolume: %d", volume);
 }
 
 int I_GetSfxLumpNum(sfxinfo_t *sfx)
 {
     char namebuf[16];
-    int  lumpnum;
-
     if (!sfx || !sfx->name || sfx->name[0] == '\0') return -1;
-
     snprintf(namebuf, sizeof(namebuf), "ds%s", DEH_String(sfx->name));
-
-    lumpnum = W_CheckNumForName(namebuf);
-
-    if (sfx_log_count < 30) {
-        debug_logf("I_GetSfxLumpNum: '%s' -> lump %d", namebuf, lumpnum);
-        sfx_log_count++;
-    }
-
-    return lumpnum;
+    return W_CheckNumForName(namebuf);
 }
 
 void I_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
 {
-    int i, lumpnum;
-
-    debug_logf("I_PrecacheSounds: %d sounds", num_sounds);
-
+    int i, l;
     for (i = 0; i < num_sounds; i++) {
-        lumpnum = I_GetSfxLumpNum(&sounds[i]);
-        if (lumpnum >= 0) {
-            sfx_cache_get(lumpnum);
-        }
+        l = I_GetSfxLumpNum(&sounds[i]);
+        if (l >= 0) sfx_cache_get(l);
     }
-
-    debug_logf("SFX cache loaded: %d entries", sfx_cache_count);
 }
 
 int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
 {
-    int               lumpnum;
-    sfx_cache_entry_t *entry;
-    mix_channel_t     *c;
-    int               handle;
-    int               best, i;
-    int               oldest_handle;
+    int lumpnum; sfx_cache_entry_t *entry; mix_channel_t *c;
+    int handle, best, i, oldest;
 
     (void)channel;
-
     if (!audio_ready || !sfx) return 0;
 
     lumpnum = sfx->lumpnum;
-    if (lumpnum < 0) {
-        lumpnum = I_GetSfxLumpNum(sfx);
-        if (lumpnum < 0) return 0;
-    }
+    if (lumpnum < 0) { lumpnum = I_GetSfxLumpNum(sfx); if (lumpnum < 0) return 0; }
 
     entry = sfx_cache_get(lumpnum);
     if (!entry || entry->length <= 0) return 0;
 
     sceKernelLockMutex(sfx_mutex, 1, NULL);
 
-    best = 0;
-    oldest_handle = 0x7FFFFFFF;
+    best = 0; oldest = 0x7FFFFFFF;
     for (i = 0; i < MIX_CHANNELS; i++) {
         if (!mix_ch[i].active) { best = i; goto found; }
-        if (mix_ch[i].handle < oldest_handle) {
-            oldest_handle = mix_ch[i].handle;
-            best = i;
-        }
+        if (mix_ch[i].handle < oldest) { oldest = mix_ch[i].handle; best = i; }
     }
 found:
     c = &mix_ch[best];
+    c->data = entry->samples;
+    c->length = entry->length;
+    c->pos_fixed = 0;
+    c->lumpnum = lumpnum;
+    c->step_fixed = (int)(((int64_t)entry->samplerate << 16) / OUTPUT_RATE);
+    if (c->step_fixed <= 0) c->step_fixed = (11025 << 16) / OUTPUT_RATE;
 
-    c->data       = entry->samples;
-    c->length     = entry->length;
-    c->pos_fixed  = 0;
-    c->lumpnum    = lumpnum;
-
-    c->step_fixed = (int)(((int64_t)entry->samplerate << 16) / AUDIO_RATE);
-    if (c->step_fixed <= 0) c->step_fixed = (11025 << 16) / AUDIO_RATE;
-
-    {
-        int vl, vr;
-
-        if (sep < 0)   sep = 128;
-        if (sep > 255) sep = 128;
-
-        vr = (sep * 256) / 255;
-        vl = 256 - vr;
-
-        if (vl < 0)   vl = 0;
-        if (vl > 256) vl = 256;
-        if (vr < 0)   vr = 0;
-        if (vr > 256) vr = 256;
-
-        c->vol_left  = (vl * vol) / 127;
-        c->vol_right = (vr * vol) / 127;
-
-        if (c->vol_left  > 256) c->vol_left  = 256;
-        if (c->vol_right > 256) c->vol_right = 256;
+    { int vl, vr;
+      if (sep < 0 || sep > 255) sep = 128;
+      vr = (sep * 256) / 255; vl = 256 - vr;
+      if (vl < 0) vl = 0; if (vl > 256) vl = 256;
+      if (vr < 0) vr = 0; if (vr > 256) vr = 256;
+      c->vol_left = (vl * vol) / 127;
+      c->vol_right = (vr * vol) / 127;
+      if (c->vol_left > 256) c->vol_left = 256;
+      if (c->vol_right > 256) c->vol_right = 256;
     }
 
     handle = next_handle++;
     if (next_handle > 0x7FFFFF00) next_handle = 1;
-
     c->handle = handle;
     c->active = 1;
 
     sceKernelUnlockMutex(sfx_mutex, 1);
-
-    if (sfx_log_count < 60) {
-        debug_logf("SND play: lump=%d rate=%d len=%d vol=%d sep=%d "
-                   "step=0x%X ch=%d hnd=%d",
-                   lumpnum, entry->samplerate, entry->length,
-                   vol, sep, c->step_fixed, best, handle);
-        sfx_log_count++;
-    }
-
     return handle;
 }
 
@@ -1651,35 +1279,25 @@ void I_StopSound(int handle)
     int i;
     if (sfx_mutex < 0) return;
     sceKernelLockMutex(sfx_mutex, 1, NULL);
-    for (i = 0; i < MIX_CHANNELS; i++) {
-        if (mix_ch[i].active && mix_ch[i].handle == handle) {
-            mix_ch[i].active = 0;
-            break;
-        }
-    }
+    for (i = 0; i < MIX_CHANNELS; i++)
+        if (mix_ch[i].active && mix_ch[i].handle == handle)
+            { mix_ch[i].active = 0; break; }
     sceKernelUnlockMutex(sfx_mutex, 1);
 }
 
 boolean I_SoundIsPlaying(int handle)
 {
-    int i;
-    boolean result = false;
+    int i; boolean r = false;
     if (sfx_mutex < 0) return false;
     sceKernelLockMutex(sfx_mutex, 1, NULL);
-    for (i = 0; i < MIX_CHANNELS; i++) {
-        if (mix_ch[i].active && mix_ch[i].handle == handle) {
-            result = true;
-            break;
-        }
-    }
+    for (i = 0; i < MIX_CHANNELS; i++)
+        if (mix_ch[i].active && mix_ch[i].handle == handle)
+            { r = true; break; }
     sceKernelUnlockMutex(sfx_mutex, 1);
-    return result;
+    return r;
 }
 
-void I_UpdateSound(void)
-{
-    /* Audio thread handles everything */
-}
+void I_UpdateSound(void) {}
 
 void I_UpdateSoundParams(int handle, int vol, int sep)
 {
@@ -1689,20 +1307,13 @@ void I_UpdateSoundParams(int handle, int vol, int sep)
     for (i = 0; i < MIX_CHANNELS; i++) {
         if (mix_ch[i].active && mix_ch[i].handle == handle) {
             int vl, vr;
-
-            if (sep < 0)   sep = 128;
-            if (sep > 255) sep = 128;
-
-            vr = (sep * 256) / 255;
-            vl = 256 - vr;
-            if (vl < 0)   vl = 0;
-            if (vl > 256) vl = 256;
-            if (vr < 0)   vr = 0;
-            if (vr > 256) vr = 256;
-
-            mix_ch[i].vol_left  = (vl * vol) / 127;
+            if (sep < 0 || sep > 255) sep = 128;
+            vr = (sep * 256) / 255; vl = 256 - vr;
+            if (vl < 0) vl = 0; if (vl > 256) vl = 256;
+            if (vr < 0) vr = 0; if (vr > 256) vr = 256;
+            mix_ch[i].vol_left = (vl * vol) / 127;
             mix_ch[i].vol_right = (vr * vol) / 127;
-            if (mix_ch[i].vol_left  > 256) mix_ch[i].vol_left  = 256;
+            if (mix_ch[i].vol_left > 256) mix_ch[i].vol_left = 256;
             if (mix_ch[i].vol_right > 256) mix_ch[i].vol_right = 256;
             break;
         }
@@ -1719,44 +1330,33 @@ void I_InitSound(boolean use_sfx_prefix)
 
 void I_ShutdownSound(void)
 {
-    debug_log("I_ShutdownSound");
     sfx_running = 0;
     if (sfx_thread_id >= 0) {
         sceKernelWaitThreadEnd(sfx_thread_id, NULL, NULL);
-        sceKernelDeleteThread(sfx_thread_id);
-        sfx_thread_id = -1;
+        sceKernelDeleteThread(sfx_thread_id); sfx_thread_id = -1;
     }
-    if (sfx_port >= 0) {
-        sceAudioOutReleasePort(sfx_port);
-        sfx_port = -1;
-    }
-    if (sfx_mutex >= 0) {
-        sceKernelDeleteMutex(sfx_mutex);
-        sfx_mutex = -1;
-    }
-    if (mus_mutex >= 0) {
-        sceKernelDeleteMutex(mus_mutex);
-        mus_mutex = -1;
-    }
+    if (sfx_port >= 0) { sceAudioOutReleasePort(sfx_port); sfx_port = -1; }
+    if (sfx_mutex >= 0) { sceKernelDeleteMutex(sfx_mutex); sfx_mutex = -1; }
+    if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
     audio_ready = 0;
 }
 
 void I_BindSoundVariables(void) {}
 
 /* ================================================================
-   MUSIC
+   MUSIC interface with OPL3
    ================================================================ */
 void I_InitMusic(void)
 {
-    debug_log("I_InitMusic");
+    debug_log("I_InitMusic (OPL3)");
+    load_genmidi();
 }
 
 void I_ShutdownMusic(void)
 {
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        mus_player.playing = 0;
-        memset(mus_player.voices, 0, sizeof(mus_player.voices));
+        opl_music.playing = 0;
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 }
@@ -1765,19 +1365,18 @@ void I_SetMusicVolume(int v)
 {
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        mus_player.mus_volume = v;
-        if (mus_player.mus_volume < 0)  mus_player.mus_volume = 0;
-        if (mus_player.mus_volume > 15) mus_player.mus_volume = 15;
+        opl_music.music_volume = v;
+        if (opl_music.music_volume < 0) opl_music.music_volume = 0;
+        if (opl_music.music_volume > 15) opl_music.music_volume = 15;
         sceKernelUnlockMutex(mus_mutex, 1);
     }
-    debug_logf("I_SetMusicVolume: %d", v);
 }
 
 void I_PauseSong(void)
 {
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        mus_player.playing = 0;
+        opl_music.playing = 0;
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 }
@@ -1786,157 +1385,145 @@ void I_ResumeSong(void)
 {
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        if (mus_player.data)
-            mus_player.playing = 1;
+        if (opl_music.mus_data)
+            opl_music.playing = 1;
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 }
 
 void I_StopSong(void)
 {
+    int i;
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
-        mus_player.playing = 0;
-        memset(mus_player.voices, 0, sizeof(mus_player.voices));
+        opl_music.playing = 0;
+        for (i = 0; i < OPL_NUM_VOICES; i++) {
+            opl_key_off(i);
+            opl_music.voices[i].active = 0;
+        }
         sceKernelUnlockMutex(mus_mutex, 1);
     }
 }
 
 boolean I_MusicIsPlaying(void)
 {
-    return mus_player.playing ? true : false;
+    return opl_music.playing ? true : false;
 }
 
 void *I_RegisterSong(void *data, int len)
 {
     byte *d = (byte *)data;
     byte *mus_data;
-    int   score_offset, score_len;
-    int   i;
+    int score_offset, score_len, i;
 
-    if (!data || len < 16) {
-        debug_logf("I_RegisterSong: invalid data (len=%d)", len);
-        return NULL;
-    }
+    if (!data || len < 16) return NULL;
 
     debug_logf("I_RegisterSong: %d bytes, hdr: %02X%02X%02X%02X",
                len, d[0], d[1], d[2], d[3]);
 
     if (d[0] != 'M' || d[1] != 'U' || d[2] != 'S' || d[3] != 0x1A) {
-        debug_log("I_RegisterSong: not MUS format, ignoring");
+        debug_log("Not MUS format");
         return (void *)1;
     }
 
     score_len    = d[4] | (d[5] << 8);
     score_offset = d[6] | (d[7] << 8);
 
-    if (score_offset >= len || score_offset < 12) {
-        debug_logf("I_RegisterSong: bad offset %d (len=%d)", score_offset, len);
-        return (void *)1;
-    }
-
-    if (score_len <= 0 || score_offset + score_len > len) {
+    if (score_offset >= len || score_offset < 12) return (void *)1;
+    if (score_len <= 0 || score_offset + score_len > len)
         score_len = len - score_offset;
-    }
-
-    debug_logf("MUS: score_offset=%d score_len=%d", score_offset, score_len);
 
     mus_data = (byte *)malloc(len);
-    if (!mus_data) {
-        debug_log("I_RegisterSong: malloc failed");
-        return (void *)1;
-    }
+    if (!mus_data) return (void *)1;
     memcpy(mus_data, data, len);
 
-    if (mus_mutex >= 0) {
-        sceKernelLockMutex(mus_mutex, 1, NULL);
+    if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
+
+    opl_music.playing = 0;
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        opl_key_off(i);
+        opl_music.voices[i].active = 0;
     }
 
-    mus_player.playing = 0;
-    memset(mus_player.voices, 0, sizeof(mus_player.voices));
+    opl_music.mus_data     = mus_data;
+    opl_music.mus_len      = len;
+    opl_music.score_start  = score_offset;
+    opl_music.score_len    = score_len;
+    opl_music.mus_pos      = score_offset;
+    opl_music.delay_left   = 0;
+    opl_music.tick_counter = opl_music.tick_samples;
+    opl_music.voice_age    = 0;
 
-    mus_player.data        = mus_data;
-    mus_player.data_len    = len;
-    mus_player.score_start = score_offset;
-    mus_player.score_len   = score_len;
-    mus_player.pos         = score_offset;
-    mus_player.delay_left  = 0;
-    mus_player.tick_counter = mus_player.tick_samples;
-
-    for (i = 0; i < MUS_CHANNELS; i++) {
-        mus_player.channels[i].volume = 100;
-        mus_player.channels[i].patch  = 0;
+    for (i = 0; i < 16; i++) {
+        opl_music.channels[i].volume = 100;
+        opl_music.channels[i].patch = 0;
+        opl_music.channels[i].pitch_bend = 64;
     }
 
-    if (mus_mutex >= 0) {
-        sceKernelUnlockMutex(mus_mutex, 1);
-    }
+    if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
 
-    debug_log("MUS song registered successfully");
+    debug_logf("MUS registered: offset=%d len=%d", score_offset, score_len);
     return (void *)mus_data;
 }
 
 void I_UnRegisterSong(void *handle)
 {
     if (!handle || handle == (void *)1) return;
+    int i;
 
-    if (mus_mutex >= 0) {
-        sceKernelLockMutex(mus_mutex, 1, NULL);
+    if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
+
+    opl_music.playing = 0;
+    for (i = 0; i < OPL_NUM_VOICES; i++) {
+        opl_key_off(i);
+        opl_music.voices[i].active = 0;
     }
 
-    mus_player.playing = 0;
-    memset(mus_player.voices, 0, sizeof(mus_player.voices));
-
-    if (mus_player.data == (const byte *)handle) {
-        mus_player.data     = NULL;
-        mus_player.data_len = 0;
+    if (opl_music.mus_data == (const byte *)handle) {
+        opl_music.mus_data = NULL;
+        opl_music.mus_len = 0;
     }
 
-    if (mus_mutex >= 0) {
-        sceKernelUnlockMutex(mus_mutex, 1);
-    }
+    if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
 
     free(handle);
-    debug_log("MUS song unregistered");
 }
 
 void I_PlaySong(void *handle, boolean looping)
 {
+    int i;
     if (!handle || handle == (void *)1) return;
 
-    debug_logf("I_PlaySong: handle=%p looping=%d", handle, looping);
+    if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
 
-    if (mus_mutex >= 0) {
-        sceKernelLockMutex(mus_mutex, 1, NULL);
+    if (opl_music.mus_data == (const byte *)handle) {
+        opl_music.mus_pos      = opl_music.score_start;
+        opl_music.delay_left   = 0;
+        opl_music.looping      = looping ? 1 : 0;
+        opl_music.tick_counter = opl_music.tick_samples;
+
+        for (i = 0; i < OPL_NUM_VOICES; i++) {
+            opl_key_off(i);
+            opl_music.voices[i].active = 0;
+        }
+
+        opl_music.playing = 1;
+        debug_log("OPL3 music playback started!");
     }
 
-    if (mus_player.data == (const byte *)handle) {
-        mus_player.pos         = mus_player.score_start;
-        mus_player.delay_left  = 0;
-        mus_player.looping     = looping ? 1 : 0;
-        mus_player.tick_counter = mus_player.tick_samples;
-        memset(mus_player.voices, 0, sizeof(mus_player.voices));
-        mus_player.playing     = 1;
-        debug_log("MUS playback started!");
-    } else {
-        debug_log("I_PlaySong: handle mismatch, not playing");
-    }
-
-    if (mus_mutex >= 0) {
-        sceKernelUnlockMutex(mus_mutex, 1);
-    }
+    if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
 }
 
 /* CD stubs */
-int  I_CDMusInit(void)           { return 0; }
-void I_CDMusShutdown(void)       {}
-void I_CDMusUpdate(void)         {}
-void I_CDMusStop(void)           {}
-int  I_CDMusPlay(int t)          { (void)t; return 0; }
-void I_CDMusSetVolume(int v)     { (void)v; }
-int  I_CDMusFirstTrack(void)     { return 0; }
-int  I_CDMusLastTrack(void)      { return 0; }
-int  I_CDMusTrackLength(int t)   { (void)t; return 0; }
+int  I_CDMusInit(void) { return 0; }
+void I_CDMusShutdown(void) {}
+void I_CDMusUpdate(void) {}
+void I_CDMusStop(void) {}
+int  I_CDMusPlay(int t) { (void)t; return 0; }
+void I_CDMusSetVolume(int v) { (void)v; }
+int  I_CDMusFirstTrack(void) { return 0; }
+int  I_CDMusLastTrack(void) { return 0; }
+int  I_CDMusTrackLength(int t) { (void)t; return 0; }
 
 void I_Endoom(byte *d) { (void)d; }
 
@@ -1950,14 +1537,12 @@ int main(int argc, char **argv)
 {
     int i;
     const char *wad = NULL;
-
     const char *paths[] = {
         "ux0:/data/chexquest/chex.wad",
         "ux0:/data/chexquest/doom1.wad",
         "ux0:/data/chexquest/doom.wad",
         NULL
     };
-
     SceAppUtilInitParam ip;
     SceAppUtilBootParam bp;
 
@@ -1976,7 +1561,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (FM synth music v6) ===");
+    debug_log("=== Chex Quest Vita (OPL3 music v7) ===");
 
     init_display();
     if (!display_ready) {
@@ -1986,8 +1571,6 @@ int main(int argc, char **argv)
     }
 
     base_time = get_ms();
-    debug_log("Display OK");
-
     show_color(0xFF00FF00);
     sceKernelDelayThread(1000000);
 
@@ -2012,21 +1595,14 @@ int main(int argc, char **argv)
 
     show_color(0xFFFFFF00);
     sceKernelDelayThread(500000);
-
     base_time = get_ms();
 
     {
         char *nargv[] = { "ChexQuest", "-iwad", (char *)wad, NULL };
-        debug_log("doomgeneric_Create...");
         doomgeneric_Create(3, nargv);
-        debug_logf("Create OK, time=%d", I_GetTime());
     }
 
     debug_log("Entering main loop");
-
-    while (1) {
-        doomgeneric_Tick();
-    }
-
+    while (1) { doomgeneric_Tick(); }
     return 0;
 }
