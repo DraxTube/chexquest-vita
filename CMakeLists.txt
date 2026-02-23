@@ -75,8 +75,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${DG_DIR})
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     VITA=1
     FEATURE_SOUND=0
+    DOOMGENERIC_RESX=320
+    DOOMGENERIC_RESY=200
 )
-
 target_link_libraries(${PROJECT_NAME}
     SceDisplay_stub
     SceCtrl_stub
