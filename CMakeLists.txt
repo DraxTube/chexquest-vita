@@ -72,7 +72,6 @@ add_executable(${PROJECT_NAME} ${DG_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${DG_DIR})
 
-# *** FIX PRINCIPALE: FEATURE_SOUND=1 ***
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     VITA=1
     FEATURE_SOUND=1
