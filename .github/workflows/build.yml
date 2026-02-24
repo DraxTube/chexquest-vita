@@ -18,100 +18,8 @@ jobs:
       - name: Verify source files
         run: |
           for f in doomgeneric_vita.c CMakeLists.txt; do
-            if [ ! -f "$f" ]; then echo "MANCANTE: $f"; exit 1; fi
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; exit 1; fi
             echo "OK: $f"
-          done
-
-      - name: Install image tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y imagemagick pngcrush
-
-      - name: Convert LiveArea assets for PS Vita
-        run: |
-          set -e
-          mkdir -p sce_sys/livearea/contents
-
-          convert_vita_png() {
-            local input="$1"
-            local output="$2"
-            local w="$3"
-            local h="$4"
-            local tmp_bmp="/tmp/vita_conv.bmp"
-            local tmp_png="/tmp/vita_conv.png"
-            local tmp_crush="/tmp/vita_crush.png"
-
-            echo "--- $input -> $output (${w}x${h}) ---"
-
-            convert "$input" \
-              -resize "${w}x${h}!" \
-              -alpha off \
-              -colorspace sRGB \
-              -type TrueColor \
-              -depth 8 \
-              "BMP3:${tmp_bmp}"
-
-            convert "${tmp_bmp}" \
-              -type TrueColor \
-              -depth 8 \
-              -define png:color-type=2 \
-              -define png:bit-depth=8 \
-              "PNG24:${tmp_png}"
-
-            pngcrush -rem alla -rem allb -rem text -rem gAMA -rem cHRM \
-                     -rem iCCP -rem sRGB -rem tEXt -rem iTXt -rem zTXt \
-                     -rem tIME -rem pHYs -force \
-                     "${tmp_png}" "${tmp_crush}" 2>/dev/null
-
-            if [ -f "${tmp_crush}" ] && [ -s "${tmp_crush}" ]; then
-              cp "${tmp_crush}" "$output"
-            else
-              cp "${tmp_png}" "$output"
-            fi
-            rm -f "${tmp_bmp}" "${tmp_png}" "${tmp_crush}"
-
-            echo "  OK: $(identify -format '%wx%h %[bit-depth]-bit %[type]' "$output" 2>/dev/null) ($(wc -c < "$output") bytes)"
-          }
-
-          [ -f sce_sys/icon0.png ] && convert_vita_png sce_sys/icon0.png sce_sys/icon0.png 128 128
-          [ -f sce_sys/livearea/contents/bg.png ] && convert_vita_png sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png 840 500
-          [ -f sce_sys/livearea/contents/startup.png ] && convert_vita_png sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png 280 158
-
-          printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
-          printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
-          printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
-          printf '    <image>bg.png</image>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  </livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  <gate>\n' >> sce_sys/livearea/contents/template.xml
-          printf '    <startup-image>startup.png</startup-image>\n' >> sce_sys/livearea/contents/template.xml
-          printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
-          printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
-
-          echo ""
-          echo "=== RIEPILOGO ==="
-          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/template.xml; do
-            [ -f "$f" ] && echo "OK: $f ($(wc -c < "$f") bytes)" || echo "WARN: $f mancante"
-          done
-
-          echo ""
-          echo "=== CHUNK PNG ==="
-          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png; do
-            [ ! -f "$f" ] && continue
-            echo "$f:"
-            python3 -c "
-          import struct
-          with open('$f', 'rb') as fp:
-              fp.read(8)
-              while True:
-                  hdr = fp.read(8)
-                  if len(hdr) < 8: break
-                  length = struct.unpack('>I', hdr[:4])[0]
-                  name = hdr[4:8].decode('ascii', errors='replace')
-                  print(f'  {name} ({length} bytes)')
-                  fp.seek(length + 4, 1)
-          " 2>/dev/null || echo "  (errore)"
           done
 
       - name: Install VitaSDK
@@ -152,28 +60,14 @@ jobs:
       - name: Repack VPK without compression
         run: |
           cd build
-          echo "=== Repack VPK (store mode) ==="
           mkdir -p /tmp/vpk_repack
           unzip -o *.vpk -d /tmp/vpk_repack
-
-          echo ""
-          echo "=== Verifica struttura ==="
-          find /tmp/vpk_repack -type f | sort
-
-          echo ""
-          echo "=== Verifica param.sfo ==="
-          strings /tmp/vpk_repack/sce_sys/param.sfo | grep -E "(TITLE|APP_VER|CONTENT)" || true
-
           rm -f *.vpk
           cd /tmp/vpk_repack
           zip -0 -r $OLDPWD/ChexQuestVita.vpk .
           cd $OLDPWD
           rm -rf /tmp/vpk_repack
-
-          echo ""
-          echo "=== VPK finale ==="
           ls -lh *.vpk
-          unzip -l *.vpk
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
