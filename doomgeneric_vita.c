@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v12 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v13 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -166,11 +166,8 @@ static void analog_axis(int val, int neg_key, int pos_key,
 }
 
 /* ================================================================
-   Quick Save / Load  (L+R+UP = save, L+R+DOWN = load)
+   Quick Save / Load  (L+R+UP = F6 save, L+R+DOWN = F9 load)
    ================================================================ */
-extern void G_SaveGame(int slot, char *description);
-extern void G_LoadGame(int slot);
-
 static int quicksave_cooldown = 0;
 static int quickload_cooldown = 0;
 
@@ -186,19 +183,19 @@ static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
     if (quicksave_cooldown > 0) quicksave_cooldown--;
     if (quickload_cooldown > 0) quickload_cooldown--;
 
+    /* L+R+UP = F6 (Quick Save) */
     if (lt && rt && up && !up_was && quicksave_cooldown == 0) {
-        char desc[32];
-        uint32_t ms = get_ms() - base_time;
-        int s = ms / 1000, m = s / 60, h = m / 60;
-        snprintf(desc, sizeof(desc), "VITA %d:%02d:%02d", h, m % 60, s % 60);
-        G_SaveGame(0, desc);
-        debug_logf("Quick save: %s", desc);
+        kq_push(1, KEY_F6);
+        kq_push(0, KEY_F6);
+        debug_log("Quick Save (F6) pressed");
         quicksave_cooldown = TICRATE;
     }
 
+    /* L+R+DOWN = F9 (Quick Load) */
     if (lt && rt && dn && !dn_was && quickload_cooldown == 0) {
-        G_LoadGame(0);
-        debug_log("Quick load slot 0");
+        kq_push(1, KEY_F9);
+        kq_push(0, KEY_F9);
+        debug_log("Quick Load (F9) pressed");
         quickload_cooldown = TICRATE;
     }
 }
@@ -1371,7 +1368,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (Quick Save v12) ===");
+    debug_log("=== Chex Quest Vita (Quick Save v13) ===");
 
     init_display();
     if (!display_ready) {
