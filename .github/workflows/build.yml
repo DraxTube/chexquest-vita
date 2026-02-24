@@ -63,7 +63,20 @@ jobs:
           echo "=== Contenuto VPK ==="
           unzip -l *.vpk
           echo ""
+          echo "=== Verifica ==="
+          mkdir -p /tmp/vpk_check
+          unzip -o *.vpk -d /tmp/vpk_check
+          for f in eboot.bin sce_sys/param.sfo; do
+            if [ -f "/tmp/vpk_check/$f" ]; then
+              echo "OK: $f ($(wc -c < /tmp/vpk_check/$f) bytes)"
+            else
+              echo "MANCANTE: $f"
+              exit 1
+            fi
+          done
+          echo ""
           ls -lh *.vpk
+          rm -rf /tmp/vpk_check
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
