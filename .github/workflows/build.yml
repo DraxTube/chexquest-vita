@@ -22,13 +22,103 @@ jobs:
             echo "OK: $f"
           done
 
-      - name: Verify LiveArea assets
+      - name: Install ImageMagick
+        run: sudo apt-get install -y imagemagick
+
+      - name: Convert LiveArea assets to Vita-compatible PNG
         run: |
+          echo "=== Conversione immagini per PS Vita ==="
+
+          VITA_PNG_OPTS="-strip -interlace none -define png:color-type=6 -define png:exclude-chunks=all -define png:include-chunks=none -depth 8"
+
+          # icon0.png — 128x128 (la bolla)
+          if [ -f sce_sys/icon0.png ]; then
+            cp sce_sys/icon0.png sce_sys/icon0_original.png
+            convert sce_sys/icon0_original.png \
+              -resize 128x128! \
+              -background none -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              PNG32:sce_sys/icon0.png
+            echo "icon0.png: $(identify -format '%wx%h %[bit-depth]-bit %[channels]' sce_sys/icon0.png) ($(wc -c < sce_sys/icon0.png) bytes)"
+            rm -f sce_sys/icon0_original.png
+          else
+            echo "WARN: icon0.png non trovato, genero placeholder"
+            convert -size 128x128 xc:'#2E8B57' \
+              -fill '#FFD700' -gravity center -pointsize 40 -annotate +0+0 'CQ' \
+              -alpha on -alpha set $VITA_PNG_OPTS \
+              PNG32:sce_sys/icon0.png
+          fi
+
+          # bg.png — 840x500 (sfondo LiveArea)
+          mkdir -p sce_sys/livearea/contents
+          if [ -f sce_sys/livearea/contents/bg.png ]; then
+            cp sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg_original.png
+            convert sce_sys/livearea/contents/bg_original.png \
+              -resize 840x500! \
+              -background none -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              PNG32:sce_sys/livearea/contents/bg.png
+            echo "bg.png: $(identify -format '%wx%h %[bit-depth]-bit %[channels]' sce_sys/livearea/contents/bg.png) ($(wc -c < sce_sys/livearea/contents/bg.png) bytes)"
+            rm -f sce_sys/livearea/contents/bg_original.png
+          else
+            echo "WARN: bg.png non trovato, genero placeholder"
+            convert -size 840x500 xc:'#0f3460' \
+              -fill white -gravity center -pointsize 60 -annotate +0+0 'CHEX QUEST' \
+              -alpha on -alpha set $VITA_PNG_OPTS \
+              PNG32:sce_sys/livearea/contents/bg.png
+          fi
+
+          # startup.png — 280x158 (pulsante avvio)
+          if [ -f sce_sys/livearea/contents/startup.png ]; then
+            cp sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup_original.png
+            convert sce_sys/livearea/contents/startup_original.png \
+              -resize 280x158! \
+              -background none -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              PNG32:sce_sys/livearea/contents/startup.png
+            echo "startup.png: $(identify -format '%wx%h %[bit-depth]-bit %[channels]' sce_sys/livearea/contents/startup.png) ($(wc -c < sce_sys/livearea/contents/startup.png) bytes)"
+            rm -f sce_sys/livearea/contents/startup_original.png
+          else
+            echo "WARN: startup.png non trovato, genero placeholder"
+            convert -size 280x158 xc:'#e94560' \
+              -fill white -gravity center -pointsize 40 -annotate +0+0 'PLAY' \
+              -alpha on -alpha set $VITA_PNG_OPTS \
+              PNG32:sce_sys/livearea/contents/startup.png
+          fi
+
+          # template.xml
+          if [ ! -f sce_sys/livearea/contents/template.xml ]; then
+            echo "Genero template.xml"
+            printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
+            printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
+            printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+            printf '    <image>bg.png</image>\n' >> sce_sys/livearea/contents/template.xml
+            printf '  </livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+            printf '  <gate>\n' >> sce_sys/livearea/contents/template.xml
+            printf '    <startup-image>startup.png</startup-image>\n' >> sce_sys/livearea/contents/template.xml
+            printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
+            printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
+          fi
+
+          echo ""
+          echo "=== Verifica finale assets ==="
           for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png \
                    sce_sys/livearea/contents/template.xml; do
-            if [ ! -f "$f" ]; then echo "MANCANTE: $f"; exit 1; fi
-            echo "OK: $f ($(wc -c < "$f") bytes)"
+            if [ -f "$f" ]; then
+              echo "OK: $f ($(wc -c < "$f") bytes)"
+            else
+              echo "ERRORE: $f mancante!"
+              exit 1
+            fi
+          done
+
+          # Verifica dettagliata PNG
+          echo ""
+          echo "=== Dettagli PNG ==="
+          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
+                   sce_sys/livearea/contents/startup.png; do
+            echo "$f: $(identify -verbose "$f" 2>/dev/null | grep -E '(Geometry|Depth|Type|Interlace|Colorspace)' | tr '\n' ' ')"
           done
 
       - name: Install VitaSDK
