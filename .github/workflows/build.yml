@@ -22,6 +22,11 @@ jobs:
             echo "OK: $f"
           done
 
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
       - name: Install VitaSDK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,6 +54,22 @@ jobs:
         run: |
           cp doomgeneric_vita.c doomgeneric/doomgeneric/doomgeneric_vita.c
 
+      - name: Generate assets
+        run: |
+          chmod +x generate_assets.sh
+          bash generate_assets.sh
+          echo ""
+          echo "=== Verifica assets ==="
+          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
+                   sce_sys/livearea/contents/startup.png \
+                   sce_sys/livearea/contents/template.xml; do
+            if [ -f "$f" ]; then
+              echo "OK: $f ($(wc -c < "$f") bytes)"
+            else
+              echo "MANCANTE: $f"
+            fi
+          done
+
       - name: Build
         run: |
           export VITASDK=/usr/local/vitasdk
@@ -65,14 +86,31 @@ jobs:
           echo ""
           mkdir -p /tmp/vpk_check
           unzip -o *.vpk -d /tmp/vpk_check
-          echo "=== File ==="
-          find /tmp/vpk_check -type f -exec ls -la {} \;
+          echo ""
+          echo "=== Verifica file ==="
+          MISSING=0
+          for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
+                   sce_sys/livearea/contents/bg.png \
+                   sce_sys/livearea/contents/startup.png \
+                   sce_sys/livearea/contents/template.xml; do
+            if [ -f "/tmp/vpk_check/$f" ]; then
+              SIZE=$(wc -c < "/tmp/vpk_check/$f")
+              echo "OK: $f ($SIZE bytes)"
+            else
+              echo "MANCANTE: $f"
+              MISSING=1
+            fi
+          done
           echo ""
           echo "=== param.sfo ==="
           strings /tmp/vpk_check/sce_sys/param.sfo
           echo ""
           ls -lh *.vpk
           rm -rf /tmp/vpk_check
+          if [ $MISSING -eq 1 ]; then
+            echo "ERRORE: File mancanti nel VPK!"
+            exit 1
+          fi
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
