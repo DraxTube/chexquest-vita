@@ -56,4 +56,4 @@ Both have a 1 second cooldown. The in-game save/load menu does not work, use the
 - If no WAD file is found the game logs an error and exits after 5 seconds with no on-screen message.
 
 
-make -j$(nproc)
+
