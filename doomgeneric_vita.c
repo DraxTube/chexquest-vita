@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v14 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v15 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -12,6 +12,12 @@
 #include "deh_str.h"
 
 extern void D_PostEvent(event_t *ev);
+
+/* Save/Load – bypass menu entirely */
+extern char *savegamedir;
+extern void G_SaveGame(int slot, char *description);
+extern void G_LoadGame(char *name);
+extern char *P_SaveGameFile(int slot);
 
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
@@ -166,12 +172,11 @@ static void analog_axis(int val, int neg_key, int pos_key,
 }
 
 /* ================================================================
-   Quick Save / Load  (L+R+UP = F6+Y save, L+R+DOWN = F9+Y load)
+   Quick Save / Load  (L+R+UP = save, L+R+DOWN = load)
+   Bypasses menu completely — no keyboard needed
    ================================================================ */
 static int quicksave_cooldown = 0;
 static int quickload_cooldown = 0;
-static int quicksave_confirm = 0;
-static int quickload_confirm = 0;
 
 static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
 {
@@ -185,39 +190,23 @@ static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
     if (quicksave_cooldown > 0) quicksave_cooldown--;
     if (quickload_cooldown > 0) quickload_cooldown--;
 
-    /* Conferma automatica dopo qualche frame */
-    if (quicksave_confirm > 0) {
-        quicksave_confirm--;
-        if (quicksave_confirm == 0) {
-            kq_push(1, 'y');
-            kq_push(0, 'y');
-            debug_log("Quick Save confirmed (Y)");
-        }
-    }
-    if (quickload_confirm > 0) {
-        quickload_confirm--;
-        if (quickload_confirm == 0) {
-            kq_push(1, 'y');
-            kq_push(0, 'y');
-            debug_log("Quick Load confirmed (Y)");
-        }
-    }
-
-    /* L+R+UP = F6 (Quick Save) + auto confirm */
+    /* L+R+UP = Direct Save to slot 0 (no menu) */
     if (lt && rt && up && !up_was && quicksave_cooldown == 0) {
-        kq_push(1, KEY_F6);
-        kq_push(0, KEY_F6);
-        quicksave_confirm = 3;
-        debug_log("Quick Save (F6) pressed");
+        G_SaveGame(0, "VITA SAVE");
+        debug_logf("Direct save slot 0, dir=%s",
+                   savegamedir ? savegamedir : "(null)");
         quicksave_cooldown = TICRATE;
     }
 
-    /* L+R+DOWN = F9 (Quick Load) + auto confirm */
+    /* L+R+DOWN = Direct Load from slot 0 (no menu) */
     if (lt && rt && dn && !dn_was && quickload_cooldown == 0) {
-        kq_push(1, KEY_F9);
-        kq_push(0, KEY_F9);
-        quickload_confirm = 3;
-        debug_log("Quick Load (F9) pressed");
+        char *path = P_SaveGameFile(0);
+        if (path) {
+            G_LoadGame(path);
+            debug_logf("Direct load: %s", path);
+        } else {
+            debug_log("P_SaveGameFile returned NULL");
+        }
         quickload_cooldown = TICRATE;
     }
 }
@@ -1390,7 +1379,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (Quick Save v14) ===");
+    debug_log("=== Chex Quest Vita (Quick Save v15) ===");
 
     init_display();
     if (!display_ready) {
@@ -1425,6 +1414,10 @@ int main(int argc, char **argv)
         char *nargv[] = { "ChexQuest", "-iwad", (char *)wad, NULL };
         doomgeneric_Create(3, nargv);
     }
+
+    /* Force save directory to Vita writable path */
+    savegamedir = strdup("ux0:/data/chexquest/");
+    debug_logf("savegamedir forced to: %s", savegamedir);
 
     debug_log("Entering main loop");
     while (1) { doomgeneric_Tick(); }
