@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music Fixed v11 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 + AutoSave v12 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -995,7 +995,6 @@ uint32_t DG_GetTicksMs(void) { return get_ms() - base_time; }
 
 int DG_GetKey(int *pressed, unsigned char *key)
 {
-    /* Input is handled entirely via D_PostEvent in I_StartTic */
     (void)pressed;
     (void)key;
     return 0;
@@ -1411,7 +1410,6 @@ void *I_RegisterSong(void *data, int len)
 
     if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
 
-    /* Free previous music data if any */
     if (opl_music.mus_data) {
         free((void *)opl_music.mus_data);
         opl_music.mus_data = NULL;
@@ -1509,6 +1507,172 @@ char *gus_patch_path = "";
 int   gus_ram_kb = 0;
 
 /* ================================================================
+   SAVE GAME - Auto-naming for Vita (no keyboard needed)
+   ================================================================
+
+   The DOOM engine save/load menu (m_menu.c) calls M_ReadSaveStrings()
+   to populate the save slot list, and when the user picks a slot to
+   save, it enters a text-editing mode waiting for keypresses.
+
+   On Vita there is no keyboard. We hook into the save system by
+   patching the savegame description with auto-generated names.
+
+   The approach: We override M_StringWidth and provide a save hook.
+   Actually, the cleanest approach for doomgeneric is to provide
+   default save names. We do this by pre-creating the savegame
+   description files so DOOM sees named slots.
+
+   Simpler approach: We just make sure the save directory exists
+   and provide a function that the engine's save code can call.
+   Since doomgeneric's DOOM code uses the standard m_menu.c save
+   system, we need to auto-fill the save name when user confirms.
+
+   The REAL fix: We intercept the save menu. When user selects a
+   save slot and presses ENTER, instead of entering text-edit mode,
+   we immediately save with an auto-generated name.
+   ================================================================ */
+
+/* Save slot names - auto generated */
+static char vita_save_descriptions[6][32];
+static int  vita_save_hook_installed = 0;
+
+/* This gets called from our patched save routine */
+static void vita_generate_save_name(int slot, char *out, int maxlen)
+{
+    uint32_t ms = get_ms() - base_time;
+    int secs = ms / 1000;
+    int mins = secs / 60;
+    int hrs  = mins / 60;
+    snprintf(out, maxlen, "VITA SLOT %d - %d:%02d:%02d",
+             slot + 1, hrs, mins % 60, secs % 60);
+}
+
+/*
+   We need to hook into m_menu.c's save game flow.
+   In chocolate-doom / doomgeneric, M_DoSave() is called when
+   save is confirmed. The save description is in savegamestrings[].
+
+   Since we can't easily modify m_menu.c, we use a different approach:
+   We simulate keyboard input to type a name automatically when
+   the save menu enters edit mode.
+*/
+
+/* Auto-save state machine */
+static int  autosave_active = 0;
+static int  autosave_slot = -1;
+static int  autosave_phase = 0;
+static int  autosave_char_idx = 0;
+static char autosave_name[32];
+static int  autosave_delay = 0;
+
+/*
+   When we detect the user is in save mode (after selecting a slot),
+   we inject keystrokes to type a name and press ENTER.
+
+   Detection: After user presses ENTER on a save slot, the game
+   enters saveStringEnter mode. We detect this by monitoring if
+   we just sent an ENTER on a save menu item.
+*/
+
+/* Track menu state for auto-save */
+static int  menu_save_selected = 0;
+static int  save_enter_pending = 0;
+static int  save_inject_frame = 0;
+
+/*
+   Alternative simpler approach: We pre-fill save slot names by writing
+   to the savegame files' descriptions, and we make ENTER immediately
+   confirm the save (by sending the name chars + ENTER rapidly).
+*/
+
+void vita_check_autosave(void)
+{
+    int i;
+
+    if (!autosave_active) return;
+
+    if (autosave_delay > 0) {
+        autosave_delay--;
+        return;
+    }
+
+    switch (autosave_phase) {
+    case 0:
+        /* Clear existing text - send backspace several times */
+        for (i = 0; i < 24; i++) {
+            kq_push(1, KEY_BACKSPACE);
+            kq_push(0, KEY_BACKSPACE);
+        }
+        autosave_phase = 1;
+        autosave_delay = 2;
+        break;
+
+    case 1:
+        /* Type the auto-generated name */
+        if (autosave_name[autosave_char_idx] != '\0') {
+            char ch = autosave_name[autosave_char_idx];
+            kq_push(1, ch);
+            kq_push(0, ch);
+            autosave_char_idx++;
+            autosave_delay = 0;
+        } else {
+            autosave_phase = 2;
+            autosave_delay = 2;
+        }
+        break;
+
+    case 2:
+        /* Press ENTER to confirm save */
+        kq_push(1, KEY_ENTER);
+        kq_push(0, KEY_ENTER);
+        autosave_active = 0;
+        autosave_phase = 0;
+        debug_logf("Auto-save slot %d: '%s'", autosave_slot, autosave_name);
+        break;
+    }
+}
+
+/*
+   Quick-save feature: Triangle + Start = quick save to slot 0
+   This bypasses the menu entirely by calling G_SaveGame directly.
+*/
+extern void G_SaveGame(int slot, char *description);
+extern void G_LoadGame(int slot);
+extern int  gamestate;    /* GS_LEVEL = 0 in some builds */
+extern int  gameaction;
+
+/* Quick save/load state */
+static int quicksave_cooldown = 0;
+static int quickload_cooldown = 0;
+
+static void check_quicksave(SceCtrlData *pad)
+{
+    /* L + R + DPAD_UP = Quick Save to slot 0 */
+    /* L + R + DPAD_DOWN = Quick Load from slot 0 */
+    int ltrig = (pad->buttons & SCE_CTRL_LTRIGGER) != 0;
+    int rtrig = (pad->buttons & SCE_CTRL_RTRIGGER) != 0;
+    int up    = (pad->buttons & SCE_CTRL_UP) != 0;
+    int down  = (pad->buttons & SCE_CTRL_DOWN) != 0;
+
+    if (quicksave_cooldown > 0) quicksave_cooldown--;
+    if (quickload_cooldown > 0) quickload_cooldown--;
+
+    if (ltrig && rtrig && up && quicksave_cooldown == 0) {
+        char desc[32];
+        vita_generate_save_name(0, desc, sizeof(desc));
+        G_SaveGame(0, desc);
+        debug_logf("Quick saved: %s", desc);
+        quicksave_cooldown = TICRATE;  /* 1 second cooldown */
+    }
+
+    if (ltrig && rtrig && down && quickload_cooldown == 0) {
+        G_LoadGame(0);
+        debug_log("Quick loaded slot 0");
+        quickload_cooldown = TICRATE;
+    }
+}
+
+/* ================================================================
    MAIN
    ================================================================ */
 int main(int argc, char **argv)
@@ -1539,7 +1703,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (OPL3 GENMIDI fixed v11) ===");
+    debug_log("=== Chex Quest Vita (OPL3 + AutoSave v12) ===");
 
     init_display();
     if (!display_ready) {
@@ -1576,6 +1740,18 @@ int main(int argc, char **argv)
     }
 
     debug_log("Entering main loop");
-    while (1) { doomgeneric_Tick(); }
+    while (1) {
+        doomgeneric_Tick();
+
+        /* Check for quick save/load combo */
+        {
+            SceCtrlData qpad;
+            sceCtrlPeekBufferPositive(0, &qpad, 1);
+            check_quicksave(&qpad);
+        }
+
+        /* Process auto-save keystroke injection */
+        vita_check_autosave();
+    }
     return 0;
 }
