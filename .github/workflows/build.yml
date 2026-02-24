@@ -49,80 +49,144 @@ jobs:
 
       - name: Generate LiveArea assets
         run: |
-          sudo apt-get install -y imagemagick pngcheck
+          sudo apt-get install -y python3-pip pngcheck
+          pip3 install Pillow
 
           rm -rf sce_sys
           mkdir -p sce_sys/livearea/contents
 
-          TITLE_OK=0
-          curl -sL --max-time 20 -o /tmp/chex_title_raw.png \
-            "https://tcrf.net/images/1/11/Chex_Quest-title.png" 2>/dev/null || true
-          if [ -s /tmp/chex_title_raw.png ] && file /tmp/chex_title_raw.png | grep -qi "PNG"; then
-            TITLE_OK=1
-            echo "Title screen scaricato OK"
-          else
-            echo "Title screen non disponibile, uso fallback"
-            rm -f /tmp/chex_title_raw.png
-          fi
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import urllib.request
+          import struct
+          import os
 
-          VITA_PNG_OPTS="-strip -interlace none -define png:color-type=6 -define png:exclude-chunks=all -depth 8"
+          def save_vita_png(img, path):
+              """Salva PNG 24-bit RGB puro, zero chunk extra"""
+              # FORZA conversione a RGB 24-bit (no alpha MAI)
+              rgb = img.convert('RGB')
+              # Pulisci TUTTI i metadati
+              rgb.info = {}
+              # Salva senza ottimizzazioni che aggiungono chunk
+              rgb.save(path, 'PNG', optimize=False)
+              # Ora rimuovi tutti i chunk non essenziali dal file
+              strip_png_chunks(path)
 
-          # --- ICON0.PNG (128x128) ---
-          if [ "$TITLE_OK" = "1" ]; then
-            convert /tmp/chex_title_raw.png \
-              -resize 128x128^ -gravity center -extent 128x128 \
-              -background '#1a1a2e' -flatten -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/icon0.png
-          else
-            convert -size 128x128 xc:'#2E8B57' \
-              -fill '#FFD700' -gravity center \
-              -font DejaVu-Sans-Bold -pointsize 28 \
-              -annotate +0-8 'CQ' \
-              -fill white -pointsize 11 \
-              -annotate +0+16 'CHEX QUEST' \
-              -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/icon0.png
-          fi
+          def strip_png_chunks(path):
+              """Rimuove TUTTI i chunk PNG tranne IHDR, IDAT, IEND"""
+              with open(path, 'rb') as f:
+                  data = f.read()
+              sig = b'\x89PNG\r\n\x1a\n'
+              if data[:8] != sig:
+                  print(f"  ERRORE: {path} non e' PNG!")
+                  return
+              out = bytearray(sig)
+              pos = 8
+              kept = []
+              removed = []
+              while pos + 12 <= len(data):
+                  length = struct.unpack('>I', data[pos:pos+4])[0]
+                  chunk_type = data[pos+4:pos+8].decode('ascii', errors='replace')
+                  chunk_end = pos + 12 + length
+                  if chunk_end > len(data):
+                      break
+                  if chunk_type in ('IHDR', 'IDAT', 'IEND'):
+                      out.extend(data[pos:chunk_end])
+                      kept.append(chunk_type)
+                  else:
+                      removed.append(chunk_type)
+                  pos = chunk_end
+              with open(path, 'wb') as f:
+                  f.write(bytes(out))
+              print(f"  Kept: {kept}")
+              if removed:
+                  print(f"  Removed: {removed}")
 
-          # --- BG.PNG (840x500) ---
-          if [ "$TITLE_OK" = "1" ]; then
-            convert /tmp/chex_title_raw.png \
-              -resize 840x500^ -gravity center -extent 840x500 \
-              -background '#000000' -flatten -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/livearea/contents/bg.png
-          else
-            convert -size 840x500 xc:'#0f3460' \
-              -fill white -gravity center \
-              -font DejaVu-Sans-Bold -pointsize 48 \
-              -annotate +0-20 'CHEX QUEST' \
-              -fill '#cccccc' -pointsize 20 \
-              -annotate +0+30 'PS Vita' \
-              -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/livearea/contents/bg.png
-          fi
+          # Scarica title screen
+          title_img = None
+          try:
+              urllib.request.urlretrieve(
+                  "https://tcrf.net/images/1/11/Chex_Quest-title.png",
+                  "/tmp/chex_title.png"
+              )
+              t = Image.open("/tmp/chex_title.png")
+              title_img = t.convert('RGB')  # Converti subito a RGB
+              print(f"Title screen OK: {t.size} mode={t.mode} -> RGB")
+          except Exception as e:
+              print(f"Title screen non disponibile: {e}")
 
-          # --- STARTUP.PNG (280x158) ---
-          if [ "$TITLE_OK" = "1" ]; then
-            convert /tmp/chex_title_raw.png \
-              -resize 280x158^ -gravity center -extent 280x158 \
-              -background '#000000' -flatten -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/livearea/contents/startup.png
-          else
-            convert -size 280x158 xc:'#e94560' \
-              -fill white -gravity center \
-              -font DejaVu-Sans-Bold -pointsize 36 \
-              -annotate +0-8 'PLAY' \
-              -fill '#FFD700' -pointsize 14 \
-              -annotate +0+22 'CHEX QUEST' \
-              -alpha on -alpha set \
-              $VITA_PNG_OPTS \
-              sce_sys/livearea/contents/startup.png
-          fi
+          try:
+              font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+              font_med = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+              font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+              font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+              font_xs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+          except:
+              font_big = font_med = font_title = font_small = font_xs = ImageFont.load_default()
+
+          # === ICON0.PNG — 128x128 ===
+          print("\nGenerando icon0.png...")
+          if title_img:
+              icon = title_img.resize((128, 128), Image.LANCZOS)
+          else:
+              icon = Image.new('RGB', (128, 128), (46, 139, 87))
+              d = ImageDraw.Draw(icon)
+              d.text((64, 48), "CQ", fill=(255, 215, 0), font=font_title, anchor="mm")
+              d.text((64, 80), "CHEX QUEST", fill=(255, 255, 255), font=font_xs, anchor="mm")
+          save_vita_png(icon, "sce_sys/icon0.png")
+          print(f"  Dimensione: {os.path.getsize('sce_sys/icon0.png')} bytes")
+
+          # === BG.PNG — 840x500 ===
+          print("\nGenerando bg.png...")
+          if title_img:
+              bg = title_img.resize((840, 500), Image.LANCZOS)
+          else:
+              bg = Image.new('RGB', (840, 500), (15, 52, 96))
+              d = ImageDraw.Draw(bg)
+              d.text((420, 230), "CHEX QUEST", fill=(255, 255, 255), font=font_big, anchor="mm")
+              d.text((420, 280), "PS Vita", fill=(200, 200, 200), font=font_small, anchor="mm")
+          save_vita_png(bg, "sce_sys/livearea/contents/bg.png")
+          print(f"  Dimensione: {os.path.getsize('sce_sys/livearea/contents/bg.png')} bytes")
+
+          # === STARTUP.PNG — 280x158 ===
+          print("\nGenerando startup.png...")
+          if title_img:
+              startup = title_img.resize((280, 158), Image.LANCZOS)
+          else:
+              startup = Image.new('RGB', (280, 158), (233, 69, 96))
+              d = ImageDraw.Draw(startup)
+              d.text((140, 65), "PLAY", fill=(255, 255, 255), font=font_med, anchor="mm")
+              d.text((140, 100), "CHEX QUEST", fill=(255, 215, 0), font=font_small, anchor="mm")
+          save_vita_png(startup, "sce_sys/livearea/contents/startup.png")
+          print(f"  Dimensione: {os.path.getsize('sce_sys/livearea/contents/startup.png')} bytes")
+
+          # === VERIFICA FINALE ===
+          print("\n=== VERIFICA PNG ===")
+          for path in ["sce_sys/icon0.png",
+                       "sce_sys/livearea/contents/bg.png",
+                       "sce_sys/livearea/contents/startup.png"]:
+              img = Image.open(path)
+              print(f"{path}: size={img.size} mode={img.mode}")
+              if img.mode != 'RGB':
+                  print(f"  ERRORE: modo {img.mode}, dovrebbe essere RGB!")
+                  exit(1)
+              # Verifica color type nel raw PNG
+              with open(path, 'rb') as f:
+                  raw = f.read()
+              # Color type e' al byte 25 (offset 8+8+4+4+1 = 25)
+              # IHDR: width(4) height(4) bitdepth(1) colortype(1)
+              color_type = raw[25]
+              bit_depth = raw[24]
+              print(f"  PNG bit_depth={bit_depth} color_type={color_type}")
+              if color_type != 2:
+                  print(f"  ERRORE: color_type={color_type}, dovrebbe essere 2 (RGB)!")
+                  exit(1)
+              if bit_depth != 8:
+                  print(f"  ERRORE: bit_depth={bit_depth}, dovrebbe essere 8!")
+                  exit(1)
+
+          print("\nTutti i PNG sono 24-bit RGB puliti!")
+          PYEOF
 
           # --- TEMPLATE.XML ---
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
@@ -135,49 +199,21 @@ jobs:
           printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
           printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          # --- VALIDAZIONE ---
+          # --- VALIDAZIONE FINALE ---
           echo ""
-          echo "=== VALIDAZIONE ASSETS ==="
-          FAIL=0
-
+          echo "=== PNGCHECK ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
-            if [ ! -s "$f" ]; then
-              echo "ERRORE: $f mancante!"
-              FAIL=1
-              continue
-            fi
-            SIZE=$(wc -c < "$f")
-            echo "OK: $f ($SIZE bytes)"
-            identify "$f"
-            COLOR_TYPE=$(identify -verbose "$f" | grep "Type:" | head -1)
-            echo "  Color: $COLOR_TYPE"
-            pngcheck "$f" || { echo "ERRORE: $f non supera pngcheck!"; FAIL=1; }
+            pngcheck -v "$f" 2>&1 | head -5
+            echo ""
           done
 
-          if [ ! -s sce_sys/livearea/contents/template.xml ]; then
-            echo "ERRORE: template.xml mancante!"
-            FAIL=1
-          else
-            echo "OK: template.xml ($(wc -c < sce_sys/livearea/contents/template.xml) bytes)"
-          fi
-
+          echo "=== TEMPLATE.XML ==="
+          cat sce_sys/livearea/contents/template.xml
           FIRST_BYTE=$(xxd -l 1 -p sce_sys/livearea/contents/template.xml)
           if [ "$FIRST_BYTE" != "3c" ]; then
-            echo "ERRORE: template.xml ha BOM (primo byte: 0x$FIRST_BYTE)"
-            FAIL=1
-          fi
-
-          echo ""
-          echo "=== CONTENUTO template.xml ==="
-          cat sce_sys/livearea/contents/template.xml
-          echo ""
-          echo "=== HEX primi 40 bytes template.xml ==="
-          xxd -l 40 sce_sys/livearea/contents/template.xml
-
-          if [ $FAIL -ne 0 ]; then
-            echo "ERRORE: validazione fallita!"
+            echo "ERRORE: BOM presente!"
             exit 1
           fi
 
@@ -192,41 +228,50 @@ jobs:
       - name: Verify VPK
         run: |
           cd build
-          echo "=== File nel VPK ==="
-          unzip -l *.vpk
-          echo ""
-          echo "=== Verifica struttura ==="
           mkdir -p /tmp/vpk_check
           unzip -o *.vpk -d /tmp/vpk_check
 
+          echo "=== STRUTTURA VPK ==="
+          unzip -l *.vpk
+          echo ""
+
+          echo "=== PARAM.SFO ==="
+          xxd /tmp/vpk_check/sce_sys/param.sfo | head -20
+          strings /tmp/vpk_check/sce_sys/param.sfo
+          echo ""
+
+          echo "=== VERIFICA FILES ==="
           for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
                    sce_sys/livearea/contents/template.xml \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
             if [ ! -s "/tmp/vpk_check/$f" ]; then
-              echo "MANCANTE NEL VPK: $f"
+              echo "MANCANTE: $f"
               exit 1
             fi
-            echo "VPK OK: $f ($(wc -c < /tmp/vpk_check/$f) bytes)"
+            echo "OK: $f ($(wc -c < /tmp/vpk_check/$f) bytes)"
           done
-
           echo ""
-          echo "=== param.sfo ==="
-          strings /tmp/vpk_check/sce_sys/param.sfo | grep -i "chex" || echo "ATTENZIONE: nome app non trovato in param.sfo"
 
-          echo ""
+          echo "=== PNG DETTAGLI ==="
           for png in sce_sys/icon0.png \
                      sce_sys/livearea/contents/bg.png \
                      sce_sys/livearea/contents/startup.png; do
             echo "--- $png ---"
-            identify "/tmp/vpk_check/$png"
-            pngcheck "/tmp/vpk_check/$png" || true
+            pngcheck -v "/tmp/vpk_check/$png" 2>&1 | head -3
+            # Mostra color type dal raw
+            python3 -c "
+          with open('/tmp/vpk_check/$png', 'rb') as f:
+              d = f.read(30)
+          print(f'  bit_depth={d[24]} color_type={d[25]}')
+          ct = {0:'Grayscale', 2:'RGB', 3:'Palette', 4:'Gray+Alpha', 6:'RGBA'}
+          print(f'  tipo: {ct.get(d[25], \"SCONOSCIUTO\")}')
+          "
+            echo ""
           done
 
-          echo ""
-          echo "=== Dimensione VPK ==="
+          echo "=== VPK ==="
           ls -lh *.vpk
-
           rm -rf /tmp/vpk_check
 
       - name: Upload VPK
