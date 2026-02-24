@@ -11,10 +11,6 @@ endif()
 project(ChexQuestVita C)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
-set(VITA_APP_NAME "Chex Quest")
-set(VITA_TITLEID  "CQST00002")
-set(VITA_VERSION  "01.00")
-
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -w -fno-strict-aliasing -DNORMALUNIX -DLINUX -DVITA")
 
 set(DG_DIR "${CMAKE_SOURCE_DIR}/doomgeneric/doomgeneric")
@@ -125,13 +121,5 @@ target_link_libraries(${PROJECT_NAME}
     c
 )
 
+# Solo SELF — il VPK viene creato manualmente nella CI
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
-
-vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
-    VERSION ${VITA_VERSION}
-    NAME "${VITA_APP_NAME}"
-    FILE ${CMAKE_SOURCE_DIR}/sce_sys/icon0.png sce_sys/icon0.png
-    FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
-    FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
-    FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
-)
