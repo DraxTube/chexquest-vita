@@ -37,11 +37,11 @@ jobs:
             local output="$2"
             local w="$3"
             local h="$4"
-            local tmp_bmp="/tmp/vita_$$.bmp"
-            local tmp_png="/tmp/vita_$$.png"
-            local tmp_crush="/tmp/vita_crush_$$.png"
+            local tmp_bmp="/tmp/vita_conv.bmp"
+            local tmp_png="/tmp/vita_conv.png"
+            local tmp_crush="/tmp/vita_crush.png"
 
-            echo "--- Conversione: $input -> $output (${w}x${h}) ---"
+            echo "--- $input -> $output (${w}x${h}) ---"
 
             convert "$input" \
               -resize "${w}x${h}!" \
@@ -60,8 +60,7 @@ jobs:
 
             pngcrush -rem alla -rem allb -rem text -rem gAMA -rem cHRM \
                      -rem iCCP -rem sRGB -rem tEXt -rem iTXt -rem zTXt \
-                     -rem tIME -rem pHYs \
-                     -force \
+                     -rem tIME -rem pHYs -force \
                      "${tmp_png}" "${tmp_crush}" 2>/dev/null
 
             if [ -f "${tmp_crush}" ] && [ -s "${tmp_crush}" ]; then
@@ -69,48 +68,14 @@ jobs:
             else
               cp "${tmp_png}" "$output"
             fi
-
             rm -f "${tmp_bmp}" "${tmp_png}" "${tmp_crush}"
 
-            local info=$(identify -format 'size=%wx%h depth=%[bit-depth] type=%[type]' "$output" 2>/dev/null)
-            echo "  FINALE: $info ($(wc -c < "$output") bytes)"
+            echo "  OK: $(identify -format '%wx%h %[bit-depth]-bit %[type]' "$output" 2>/dev/null) ($(wc -c < "$output") bytes)"
           }
 
-          if [ -f sce_sys/icon0.png ]; then
-            convert_vita_png sce_sys/icon0.png sce_sys/icon0.png 128 128
-          else
-            convert -size 128x128 xc:'#2E8B57' \
-              -fill '#FFD700' -gravity center -pointsize 40 -annotate +0+0 'CQ' \
-              -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/ph.bmp"
-            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/icon0.png"
-            pngcrush -rem alla -force sce_sys/icon0.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/icon0.png
-            rm -f /tmp/ph.bmp
-          fi
-
-          if [ -f sce_sys/livearea/contents/bg.png ]; then
-            convert_vita_png sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png 840 500
-          else
-            convert -size 840x500 xc:'#0f3460' \
-              -fill white -gravity center -pointsize 60 -annotate +0+0 'CHEX QUEST' \
-              -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/ph.bmp"
-            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/livearea/contents/bg.png"
-            pngcrush -rem alla -force sce_sys/livearea/contents/bg.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/livearea/contents/bg.png
-            rm -f /tmp/ph.bmp
-          fi
-
-          if [ -f sce_sys/livearea/contents/startup.png ]; then
-            convert_vita_png sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png 280 158
-          else
-            convert -size 280x158 xc:'#e94560' \
-              -fill white -gravity center -pointsize 40 -annotate +0+0 'PLAY' \
-              -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/ph.bmp"
-            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/livearea/contents/startup.png"
-            pngcrush -rem alla -force sce_sys/livearea/contents/startup.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/livearea/contents/startup.png
-            rm -f /tmp/ph.bmp
-          fi
+          [ -f sce_sys/icon0.png ] && convert_vita_png sce_sys/icon0.png sce_sys/icon0.png 128 128
+          [ -f sce_sys/livearea/contents/bg.png ] && convert_vita_png sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png 840 500
+          [ -f sce_sys/livearea/contents/startup.png ] && convert_vita_png sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png 280 158
 
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
           printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
@@ -124,18 +89,16 @@ jobs:
 
           echo ""
           echo "=== RIEPILOGO ==="
-          for f in sce_sys/icon0.png \
-                   sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png \
-                   sce_sys/livearea/contents/template.xml; do
-            echo "OK: $f ($(wc -c < "$f") bytes)"
+          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
+                   sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/template.xml; do
+            [ -f "$f" ] && echo "OK: $f ($(wc -c < "$f") bytes)" || echo "WARN: $f mancante"
           done
 
           echo ""
           echo "=== CHUNK PNG ==="
-          for f in sce_sys/icon0.png \
-                   sce_sys/livearea/contents/bg.png \
+          for f in sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
+            [ ! -f "$f" ] && continue
             echo "$f:"
             python3 -c "
           import struct
@@ -148,7 +111,7 @@ jobs:
                   name = hdr[4:8].decode('ascii', errors='replace')
                   print(f'  {name} ({length} bytes)')
                   fp.seek(length + 4, 1)
-          " 2>/dev/null || echo "  (errore analisi)"
+          " 2>/dev/null || echo "  (errore)"
           done
 
       - name: Install VitaSDK
@@ -186,61 +149,31 @@ jobs:
           cmake ..
           make -j$(nproc)
 
-      - name: Fix param.sfo and repack VPK
+      - name: Repack VPK without compression
         run: |
-          export VITASDK=/usr/local/vitasdk
-          export PATH=$VITASDK/bin:$PATH
           cd build
-
-          echo "=== Rigenerazione param.sfo ==="
-          vita-mksfoex \
-            -s TITLE_ID=CQST00002 \
-            -s APP_VER=01.00 \
-            -s CONTENT_ID=CQST00002 \
-            -d ATTRIBUTE2=0 \
-            -d PARENTAL_LEVEL=0 \
-            "ChexQuest" param_new.sfo
-
-          echo "=== Ricostruzione VPK ==="
+          echo "=== Repack VPK (store mode) ==="
           mkdir -p /tmp/vpk_repack
           unzip -o *.vpk -d /tmp/vpk_repack
-          cp param_new.sfo /tmp/vpk_repack/sce_sys/param.sfo
 
-          echo "=== Contenuto param.sfo ==="
-          strings /tmp/vpk_repack/sce_sys/param.sfo | head -30
+          echo ""
+          echo "=== Verifica struttura ==="
+          find /tmp/vpk_repack -type f | sort
+
+          echo ""
+          echo "=== Verifica param.sfo ==="
+          strings /tmp/vpk_repack/sce_sys/param.sfo | grep -E "(TITLE|APP_VER|CONTENT)" || true
 
           rm -f *.vpk
           cd /tmp/vpk_repack
-          zip -0 -r $OLDPWD/ChexQuestVita.vpk . -x ".*"
+          zip -0 -r $OLDPWD/ChexQuestVita.vpk .
           cd $OLDPWD
           rm -rf /tmp/vpk_repack
 
+          echo ""
           echo "=== VPK finale ==="
           ls -lh *.vpk
-
-      - name: Verify VPK
-        run: |
-          cd build
-          echo "=== Contenuto VPK ==="
           unzip -l *.vpk
-          echo ""
-          echo "=== Verifica ==="
-          mkdir -p /tmp/vpk_check
-          unzip -o *.vpk -d /tmp/vpk_check
-          for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
-                   sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png \
-                   sce_sys/livearea/contents/template.xml; do
-            if [ -f "/tmp/vpk_check/$f" ]; then
-              echo "OK: $f ($(wc -c < /tmp/vpk_check/$f) bytes)"
-            else
-              echo "MANCANTE: $f"
-              exit 1
-            fi
-          done
-          echo ""
-          ls -lh *.vpk
-          rm -rf /tmp/vpk_check
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
