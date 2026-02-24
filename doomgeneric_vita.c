@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 + AutoSave v12 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v12 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -165,6 +165,47 @@ static void analog_axis(int val, int neg_key, int pos_key,
     if (!want_pos &&  *pos_held) { kq_push(0, pos_key); *pos_held = 0; }
 }
 
+/* ================================================================
+   Quick Save / Load  (L+R+UP = save, L+R+DOWN = load)
+   ================================================================ */
+extern void G_SaveGame(int slot, char *description);
+extern void G_LoadGame(int slot);
+
+static int quicksave_cooldown = 0;
+static int quickload_cooldown = 0;
+
+static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
+{
+    int lt  = (pad->buttons  & SCE_CTRL_LTRIGGER) != 0;
+    int rt  = (pad->buttons  & SCE_CTRL_RTRIGGER) != 0;
+    int up  = (pad->buttons  & SCE_CTRL_UP) != 0;
+    int up_was = (prev->buttons & SCE_CTRL_UP) != 0;
+    int dn  = (pad->buttons  & SCE_CTRL_DOWN) != 0;
+    int dn_was = (prev->buttons & SCE_CTRL_DOWN) != 0;
+
+    if (quicksave_cooldown > 0) quicksave_cooldown--;
+    if (quickload_cooldown > 0) quickload_cooldown--;
+
+    if (lt && rt && up && !up_was && quicksave_cooldown == 0) {
+        char desc[32];
+        uint32_t ms = get_ms() - base_time;
+        int s = ms / 1000, m = s / 60, h = m / 60;
+        snprintf(desc, sizeof(desc), "VITA %d:%02d:%02d", h, m % 60, s % 60);
+        G_SaveGame(0, desc);
+        debug_logf("Quick save: %s", desc);
+        quicksave_cooldown = TICRATE;
+    }
+
+    if (lt && rt && dn && !dn_was && quickload_cooldown == 0) {
+        G_LoadGame(0);
+        debug_log("Quick load slot 0");
+        quickload_cooldown = TICRATE;
+    }
+}
+
+/* ================================================================
+   Poll input
+   ================================================================ */
 static void do_poll_input(void)
 {
     SceCtrlData pad;
@@ -183,6 +224,10 @@ static void do_poll_input(void)
 
     if (weapon_cycle_cooldown > 0) weapon_cycle_cooldown--;
 
+    /* Quick save/load check */
+    check_quicksave(&pad, &pad_prev);
+
+    /* Buttons */
     {
         struct { unsigned btn; unsigned char key; } bm[] = {
             { SCE_CTRL_CROSS,    KEY_USE        },
@@ -203,10 +248,15 @@ static void do_poll_input(void)
         }
     }
 
+    /* D-pad / weapon cycle */
     {
         int ltrig = (pad.buttons & SCE_CTRL_LTRIGGER) != 0;
+        int rtrig = (pad.buttons & SCE_CTRL_RTRIGGER) != 0;
 
-        if (ltrig && weapon_cycle_cooldown == 0) {
+        /* Skip d-pad when L+R held (quick save combo) */
+        if (ltrig && rtrig) {
+            /* do nothing for d-pad */
+        } else if (ltrig && weapon_cycle_cooldown == 0) {
             int up_now = (pad.buttons & SCE_CTRL_UP) != 0;
             int up_was = (pad_prev.buttons & SCE_CTRL_UP) != 0;
             int dn_now = (pad.buttons & SCE_CTRL_DOWN) != 0;
@@ -261,6 +311,7 @@ static void do_poll_input(void)
         }
     }
 
+    /* Analog sticks */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
@@ -268,6 +319,7 @@ static void do_poll_input(void)
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
+    /* Touch weapon select */
     {
         SceTouchData touch;
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
@@ -306,7 +358,6 @@ static volatile int   sfx_running    = 0;
 static volatile int   sfx_master_vol = 15;
 static int            next_handle    = 1;
 static int            audio_ready    = 0;
-static int            sfx_log_count  = 0;
 
 static int16_t __attribute__((aligned(64))) sfx_buf[2][AUDIO_GRANULARITY * 2];
 static int sfx_buf_idx = 0;
@@ -425,14 +476,11 @@ typedef struct {
 
 typedef struct {
     opl3_chip        chip;
-
     genmidi_instr_t *genmidi;
     int              genmidi_loaded;
-
     opl_voice_t      voices[OPL_NUM_VOICES];
     opl_mus_chan_t    channels[16];
     uint32_t         voice_age;
-
     const byte      *mus_data;
     int              mus_len;
     int              mus_pos;
@@ -441,7 +489,6 @@ typedef struct {
     int              playing;
     int              looping;
     int              delay_left;
-
     int              tick_samples;
     int              tick_counter;
     int              music_volume;
@@ -458,49 +505,23 @@ static void opl_write(uint16_t reg, uint8_t val)
 
 static void load_genmidi(void)
 {
-    int lump;
-    byte *data;
-    int len;
-
+    int lump; byte *data; int len;
     opl_music.genmidi_loaded = 0;
-
     lump = W_CheckNumForName("GENMIDI");
-    if (lump < 0) {
-        debug_log("GENMIDI lump not found!");
-        return;
-    }
-
+    if (lump < 0) { debug_log("GENMIDI not found"); return; }
     len = W_LumpLength(lump);
     data = W_CacheLumpNum(lump, PU_STATIC);
-
-    debug_logf("GENMIDI: instr_size=%d voice_size=%d op_size=%d",
-               (int)sizeof(genmidi_instr_t),
-               (int)sizeof(genmidi_voice_t),
-               (int)sizeof(genmidi_op_t));
-
-    if (len < 8 + (int)sizeof(genmidi_instr_t) * GENMIDI_NUM_INSTRS) {
-        debug_logf("GENMIDI too small: %d bytes (need %d)",
-                   len, (int)(8 + sizeof(genmidi_instr_t) * GENMIDI_NUM_INSTRS));
-        return;
-    }
-
-    if (memcmp(data, GENMIDI_HEADER, 8) != 0) {
-        debug_log("GENMIDI bad header");
-        return;
-    }
-
+    if (len < 8 + (int)sizeof(genmidi_instr_t) * GENMIDI_NUM_INSTRS) return;
+    if (memcmp(data, GENMIDI_HEADER, 8) != 0) return;
     opl_music.genmidi = (genmidi_instr_t *)(data + 8);
     opl_music.genmidi_loaded = 1;
-
     debug_logf("GENMIDI loaded: %d instruments", GENMIDI_NUM_INSTRS);
 }
 
 static void opl_write_operator(int slot_offset, genmidi_op_t *op, int vol)
 {
     int loudness, final_level;
-
     opl_write(0x20 + slot_offset, op->tremolo);
-
     if (vol >= 0) {
         loudness = 0x3F - (op->level & 0x3F);
         loudness = (loudness * vol) / 127;
@@ -511,7 +532,6 @@ static void opl_write_operator(int slot_offset, genmidi_op_t *op, int vol)
     } else {
         opl_write(0x40 + slot_offset, (op->scale & 0xC0) | (op->level & 0x3F));
     }
-
     opl_write(0x60 + slot_offset, op->attack);
     opl_write(0x80 + slot_offset, op->sustain);
     opl_write(0xE0 + slot_offset, op->waveform & 0x07);
@@ -522,9 +542,7 @@ static void opl_set_instrument(int voice, genmidi_voice_t *gv, int volume)
     int mod_off = opl_mod_offset[voice];
     int car_off = opl_car_offset[voice];
     int is_additive = gv->feedback & 0x01;
-
     opl_write(0xC0 + voice, (gv->feedback & 0x0F) | 0x30);
-
     opl_write_operator(mod_off, &gv->modulator, is_additive ? volume : -1);
     opl_write_operator(car_off, &gv->carrier, volume);
 }
@@ -535,14 +553,12 @@ static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
     int mod_off = opl_mod_offset[voice];
     int is_additive = gv->feedback & 0x01;
     int loudness, final_level;
-
     loudness = 0x3F - (gv->carrier.level & 0x3F);
     loudness = (loudness * volume) / 127;
     final_level = 0x3F - loudness;
     if (final_level < 0) final_level = 0;
     if (final_level > 0x3F) final_level = 0x3F;
     opl_write(0x40 + car_off, (gv->carrier.scale & 0xC0) | final_level);
-
     if (is_additive) {
         loudness = 0x3F - (gv->modulator.level & 0x3F);
         loudness = (loudness * volume) / 127;
@@ -555,20 +571,13 @@ static void opl_update_volume(int voice, int volume, genmidi_voice_t *gv)
 
 static void opl_key_on(int voice, int note)
 {
-    int octave, fnote;
-    uint16_t freq;
-
+    int octave, fnote; uint16_t freq;
     if (note < 0) note = 0;
     if (note > 127) note = 127;
-
-    octave = (note / 12) - 1;
-    fnote  = note % 12;
-
+    octave = (note / 12) - 1; fnote = note % 12;
     if (octave < 0) octave = 0;
     if (octave > 7) octave = 7;
-
     freq = opl_freq_table[fnote];
-
     opl_write(0xA0 + voice, freq & 0xFF);
     opl_reg_b0[voice] = 0x20 | ((octave & 7) << 2) | ((freq >> 8) & 3);
     opl_write(0xB0 + voice, opl_reg_b0[voice]);
@@ -589,25 +598,16 @@ static void opl_silence_voice(int voice)
 
 static int opl_alloc_voice(int mus_channel, int priority)
 {
-    int i, best;
-    uint32_t oldest;
-
+    int i, best; uint32_t oldest;
     (void)priority;
-
-    for (i = 0; i < OPL_NUM_VOICES; i++) {
-        if (!opl_music.voices[i].active)
-            return i;
-    }
-
-    best = 0;
-    oldest = 0xFFFFFFFF;
+    for (i = 0; i < OPL_NUM_VOICES; i++)
+        if (!opl_music.voices[i].active) return i;
+    best = 0; oldest = 0xFFFFFFFF;
     for (i = 0; i < OPL_NUM_VOICES; i++) {
         if (opl_music.voices[i].age < oldest) {
-            oldest = opl_music.voices[i].age;
-            best = i;
+            oldest = opl_music.voices[i].age; best = i;
         }
     }
-
     opl_key_off(best);
     opl_music.voices[best].active = 0;
     return best;
@@ -621,10 +621,8 @@ static genmidi_voice_t *get_voice_instr(int voice_idx)
     patch = opl_music.channels[mus_ch].patch;
     if (mus_ch == PERCUSSION_CHAN) {
         int note = opl_music.voices[voice_idx].note;
-        if (note >= 35 && note <= 81)
-            patch = 128 + note - 35;
-        else
-            return NULL;
+        if (note >= 35 && note <= 81) patch = 128 + note - 35;
+        else return NULL;
     }
     if (patch < 0 || patch >= GENMIDI_NUM_INSTRS) return NULL;
     return &opl_music.genmidi[patch].voices[0];
@@ -633,45 +631,29 @@ static genmidi_voice_t *get_voice_instr(int voice_idx)
 static void mus_opl_note_on(int channel, int note, int volume)
 {
     int voice, patch, midi_note;
-    genmidi_instr_t *inst;
-    genmidi_voice_t *gv;
-
+    genmidi_instr_t *inst; genmidi_voice_t *gv;
     if (!opl_music.genmidi_loaded) return;
-
     patch = opl_music.channels[channel].patch;
-
     if (channel == PERCUSSION_CHAN) {
         if (note < 35 || note > 81) return;
         patch = 128 + note - 35;
     }
-
     if (patch < 0 || patch >= GENMIDI_NUM_INSTRS) return;
-
-    inst = &opl_music.genmidi[patch];
-    gv   = &inst->voices[0];
-
+    inst = &opl_music.genmidi[patch]; gv = &inst->voices[0];
     voice = opl_alloc_voice(channel, volume >= 0 ? volume : 64);
-
     if (inst->flags & GENMIDI_FLAG_FIXED) {
         midi_note = inst->fixed_note;
     } else {
         midi_note = note;
-        {
-            int offset = (int)(int16_t)gv->base_note_offset;
-            if (offset > -48 && offset < 48) {
-                midi_note += offset;
-            }
-        }
+        { int offset = (int)(int16_t)gv->base_note_offset;
+          if (offset > -48 && offset < 48) midi_note += offset; }
     }
     if (midi_note < 0) midi_note = 0;
     if (midi_note > 127) midi_note = 127;
-
     if (volume < 0) volume = opl_music.channels[channel].volume;
     if (volume > 127) volume = 127;
-
     opl_set_instrument(voice, gv, volume);
     opl_key_on(voice, midi_note);
-
     opl_music.voices[voice].active      = 1;
     opl_music.voices[voice].mus_channel = channel;
     opl_music.voices[voice].note        = note;
@@ -712,101 +694,58 @@ static byte mus_rb(void)
 
 static void mus_process_event(void)
 {
-    byte ev, channel, type;
-    int last, i;
-
+    byte ev, channel, type; int last, i;
     if (!opl_music.playing) return;
     if (opl_music.mus_pos >= opl_music.score_start + opl_music.score_len) {
         if (opl_music.looping) {
             opl_music.mus_pos = opl_music.score_start;
             for (i = 0; i < OPL_NUM_VOICES; i++) {
-                opl_silence_voice(i);
-                opl_music.voices[i].active = 0;
+                opl_silence_voice(i); opl_music.voices[i].active = 0;
             }
-        } else {
-            opl_music.playing = 0;
-        }
+        } else { opl_music.playing = 0; }
         return;
     }
-
-    ev      = mus_rb();
-    channel = ev & 0x0F;
-    type    = (ev >> 4) & 0x07;
-    last    = ev & 0x80;
-
+    ev = mus_rb(); channel = ev & 0x0F;
+    type = (ev >> 4) & 0x07; last = ev & 0x80;
     switch (type) {
-    case 0: {
-        byte note = mus_rb();
-        mus_opl_note_off(channel, note & 0x7F);
-        break;
-    }
+    case 0: { byte note = mus_rb(); mus_opl_note_off(channel, note & 0x7F); break; }
     case 1: {
-        byte nb = mus_rb();
-        int note = nb & 0x7F;
-        int vol = -1;
-        if (nb & 0x80) {
-            vol = mus_rb() & 0x7F;
-            opl_music.channels[channel].volume = vol;
-        }
-        mus_opl_note_on(channel, note, vol);
-        break;
+        byte nb = mus_rb(); int note = nb & 0x7F; int vol = -1;
+        if (nb & 0x80) { vol = mus_rb() & 0x7F; opl_music.channels[channel].volume = vol; }
+        mus_opl_note_on(channel, note, vol); break;
     }
-    case 2: {
-        byte pb = mus_rb();
-        opl_music.channels[channel].pitch_bend = pb;
-        break;
-    }
-    case 3: {
-        byte sys = mus_rb();
-        if (sys == 10 || sys == 11 || sys == 14)
-            mus_opl_all_off(channel);
-        break;
-    }
+    case 2: { byte pb = mus_rb(); opl_music.channels[channel].pitch_bend = pb; break; }
+    case 3: { byte sys = mus_rb();
+        if (sys == 10 || sys == 11 || sys == 14) mus_opl_all_off(channel); break; }
     case 4: {
-        byte ctrl = mus_rb();
-        byte val  = mus_rb();
-        if (ctrl == 0) {
-            opl_music.channels[channel].patch = val;
-        } else if (ctrl == 3) {
+        byte ctrl = mus_rb(); byte val = mus_rb();
+        if (ctrl == 0) { opl_music.channels[channel].patch = val; }
+        else if (ctrl == 3) {
             opl_music.channels[channel].volume = val & 0x7F;
             for (i = 0; i < OPL_NUM_VOICES; i++) {
                 if (opl_music.voices[i].active &&
                     opl_music.voices[i].mus_channel == channel) {
                     genmidi_voice_t *gv = get_voice_instr(i);
-                    if (gv) {
-                        int cv = (opl_music.voices[i].volume *
-                                  (val & 0x7F)) / 127;
-                        if (cv > 127) cv = 127;
-                        opl_update_volume(i, cv, gv);
-                    }
+                    if (gv) { int cv = (opl_music.voices[i].volume * (val & 0x7F)) / 127;
+                        if (cv > 127) cv = 127; opl_update_volume(i, cv, gv); }
                 }
             }
         }
         break;
     }
-    case 5:
-    case 6:
+    case 5: case 6:
         if (opl_music.looping) {
             opl_music.mus_pos = opl_music.score_start;
             for (i = 0; i < OPL_NUM_VOICES; i++) {
-                opl_silence_voice(i);
-                opl_music.voices[i].active = 0;
+                opl_silence_voice(i); opl_music.voices[i].active = 0;
             }
-        } else {
-            opl_music.playing = 0;
-        }
+        } else { opl_music.playing = 0; }
         return;
-    default:
-        break;
+    default: break;
     }
-
     if (last) {
-        int delay = 0;
-        byte db;
-        do {
-            db = mus_rb();
-            delay = (delay << 7) | (db & 0x7F);
-        } while (db & 0x80);
+        int delay = 0; byte db;
+        do { db = mus_rb(); delay = (delay << 7) | (db & 0x7F); } while (db & 0x80);
         opl_music.delay_left = delay;
     }
 }
@@ -814,34 +753,25 @@ static void mus_process_event(void)
 static void mus_opl_tick(void)
 {
     if (!opl_music.playing) return;
-    while (opl_music.delay_left <= 0 && opl_music.playing)
-        mus_process_event();
-    if (opl_music.delay_left > 0)
-        opl_music.delay_left--;
+    while (opl_music.delay_left <= 0 && opl_music.playing) mus_process_event();
+    if (opl_music.delay_left > 0) opl_music.delay_left--;
 }
 
 static void opl_mix_into(int32_t *accum_buf, int nsamples)
 {
-    int s;
-    int mvol;
-
+    int s, mvol;
     if (!opl_music.playing) return;
-
     mvol = opl_music.music_volume;
     if (mvol <= 0) return;
-
     for (s = 0; s < nsamples; s++) {
         int16_t buf[4];
-
         opl_music.tick_counter--;
         if (opl_music.tick_counter <= 0) {
             opl_music.tick_counter = opl_music.tick_samples;
             mus_opl_tick();
         }
-
         memset(buf, 0, sizeof(buf));
         OPL3_GenerateResampled(&opl_music.chip, buf);
-
         accum_buf[s * 2 + 0] += (buf[0] * mvol) / 15;
         accum_buf[s * 2 + 1] += (buf[1] * mvol) / 15;
     }
@@ -855,20 +785,14 @@ static void mix_into(int16_t *out, int nsamples)
     int i, ch;
     int32_t accum[AUDIO_GRANULARITY * 2];
     int mvol;
-
     memset(accum, 0, nsamples * 2 * sizeof(int32_t));
-
     sceKernelLockMutex(sfx_mutex, 1, NULL);
-
     mvol = sfx_master_vol;
-    if (mvol < 0) mvol = 0;
-    if (mvol > 15) mvol = 15;
-
+    if (mvol < 0) mvol = 0; if (mvol > 15) mvol = 15;
     for (i = 0; i < nsamples; i++) {
         int32_t al = 0, ar = 0;
         for (ch = 0; ch < MIX_CHANNELS; ch++) {
-            mix_channel_t *c = &mix_ch[ch];
-            int pos, sample;
+            mix_channel_t *c = &mix_ch[ch]; int pos, sample;
             if (!c->active || !c->data) continue;
             pos = c->pos_fixed >> 16;
             if (pos >= c->length) { c->active = 0; continue; }
@@ -880,19 +804,15 @@ static void mix_into(int16_t *out, int nsamples)
         accum[i * 2 + 0] += (al * mvol) / 15;
         accum[i * 2 + 1] += (ar * mvol) / 15;
     }
-
     sceKernelUnlockMutex(sfx_mutex, 1);
-
     if (mus_mutex >= 0) {
         sceKernelLockMutex(mus_mutex, 1, NULL);
         opl_mix_into(accum, nsamples);
         sceKernelUnlockMutex(mus_mutex, 1);
     }
-
     for (i = 0; i < nsamples * 2; i++) {
         int32_t v = accum[i];
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
+        if (v > 32767) v = 32767; if (v < -32768) v = -32768;
         out[i] = (int16_t)v;
     }
 }
@@ -907,43 +827,29 @@ static int sfx_thread_func(SceSize args, void *argp)
         sceAudioOutOutput(sfx_port, buf);
         sfx_buf_idx ^= 1;
     }
-    debug_log("Audio thread exiting");
     return 0;
 }
 
 static void start_audio_system(void)
 {
     int ret, vols[2], i;
-
     if (audio_ready) return;
-    debug_log("Starting audio system...");
-
+    debug_log("Starting audio...");
     memset(mix_ch, 0, sizeof(mix_ch));
     memset(sfx_buf, 0, sizeof(sfx_buf));
     memset(sfx_cache, 0, sizeof(sfx_cache));
-    sfx_cache_count = 0;
-    sfx_buf_idx = 0;
-
+    sfx_cache_count = 0; sfx_buf_idx = 0;
     memset(&opl_music, 0, sizeof(opl_music));
     memset(opl_reg_b0, 0, sizeof(opl_reg_b0));
     OPL3_Reset(&opl_music.chip, OUTPUT_RATE);
-
-    opl_write(0x01, 0x20);
-    opl_write(0x08, 0x40);
-    opl_write(0xBD, 0x00);
-    for (i = 0; i < 9; i++) {
-        opl_silence_voice(i);
-    }
-
+    opl_write(0x01, 0x20); opl_write(0x08, 0x40); opl_write(0xBD, 0x00);
+    for (i = 0; i < 9; i++) opl_silence_voice(i);
     opl_music.music_volume = 8;
     opl_music.tick_samples = OUTPUT_RATE / 140;
     opl_music.tick_counter = opl_music.tick_samples;
-
     sfx_mutex = sceKernelCreateMutex("sfx_mutex", 0, 0, NULL);
     if (sfx_mutex < 0) return;
-
     mus_mutex = sceKernelCreateMutex("mus_mutex", 0, 0, NULL);
-
     sfx_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
         AUDIO_GRANULARITY, OUTPUT_RATE, SCE_AUDIO_OUT_MODE_STEREO);
     if (sfx_port < 0)
@@ -954,12 +860,9 @@ static void start_audio_system(void)
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
-
-    vols[0] = SCE_AUDIO_VOLUME_0DB;
-    vols[1] = SCE_AUDIO_VOLUME_0DB;
+    vols[0] = SCE_AUDIO_VOLUME_0DB; vols[1] = SCE_AUDIO_VOLUME_0DB;
     sceAudioOutSetVolume(sfx_port,
         SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vols);
-
     sfx_running = 1;
     sfx_thread_id = sceKernelCreateThread("doom_audio",
         sfx_thread_func, 0x10000100, 0x10000, 0, 0, NULL);
@@ -970,7 +873,6 @@ static void start_audio_system(void)
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
-
     ret = sceKernelStartThread(sfx_thread_id, 0, NULL);
     if (ret < 0) {
         sfx_running = 0;
@@ -980,9 +882,8 @@ static void start_audio_system(void)
         if (mus_mutex >= 0) { sceKernelDeleteMutex(mus_mutex); mus_mutex = -1; }
         return;
     }
-
     audio_ready = 1;
-    debug_log("Audio system with OPL3 initialized!");
+    debug_log("Audio OK");
 }
 
 /* ================================================================
@@ -992,14 +893,8 @@ void DG_Init(void) { base_time = get_ms(); }
 void DG_DrawFrame(void) {}
 void DG_SleepMs(uint32_t ms) { sceKernelDelayThread(ms * 1000); }
 uint32_t DG_GetTicksMs(void) { return get_ms() - base_time; }
-
 int DG_GetKey(int *pressed, unsigned char *key)
-{
-    (void)pressed;
-    (void)key;
-    return 0;
-}
-
+    { (void)pressed; (void)key; return 0; }
 void DG_SetWindowTitle(const char *t) { (void)t; }
 
 /* ================================================================
@@ -1089,13 +984,10 @@ void I_FinishUpdate(void)
     uint32_t *dst;
     int x, y, step_x, step_y, sy_f;
     SceDisplayFrameBuf dfb;
-
     if (!display_ready || !I_VideoBuffer || !fb_base) return;
-
     dst = (uint32_t *)fb_base;
     step_x = (SCREENWIDTH << 16) / VITA_W;
     step_y = (SCREENHEIGHT << 16) / VITA_H;
-
     sy_f = 0;
     for (y = 0; y < VITA_H; y++) {
         int sy = sy_f >> 16;
@@ -1112,14 +1004,10 @@ void I_FinishUpdate(void)
         }
         sy_f += step_y;
     }
-
     memset(&dfb, 0, sizeof(dfb));
-    dfb.size = sizeof(dfb);
-    dfb.base = fb_base;
-    dfb.pitch = 960;
+    dfb.size = sizeof(dfb); dfb.base = fb_base; dfb.pitch = 960;
     dfb.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
-    dfb.width = 960;
-    dfb.height = 544;
+    dfb.width = 960; dfb.height = 544;
     sceDisplaySetFrameBuf(&dfb, SCE_DISPLAY_SETBUF_NEXTFRAME);
     sceDisplayWaitVblankStart();
     frame_count++;
@@ -1154,7 +1042,6 @@ void I_BindVideoVariables(void) {}
 int I_GetPaletteIndex(int r, int g, int b)
     { (void)r; (void)g; (void)b; return 0; }
 void I_InitScale(void) {}
-
 void I_InitInput(void) {}
 void I_ShutdownInput(void) {}
 void I_InitJoystick(void) {}
@@ -1166,7 +1053,6 @@ void I_BindJoystickVariables(void) {}
    SOUND interface
    ================================================================ */
 void I_SetChannels(void) {}
-
 void I_SetSfxVolume(int volume) { sfx_master_vol = volume; }
 
 int I_GetSfxLumpNum(sfxinfo_t *sfx)
@@ -1190,18 +1076,13 @@ int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
 {
     int lumpnum; sfx_cache_entry_t *entry; mix_channel_t *c;
     int handle, best, i, oldest;
-
     (void)channel;
     if (!audio_ready || !sfx) return 0;
-
     lumpnum = sfx->lumpnum;
     if (lumpnum < 0) { lumpnum = I_GetSfxLumpNum(sfx); if (lumpnum < 0) return 0; }
-
     entry = sfx_cache_get(lumpnum);
     if (!entry || entry->length <= 0) return 0;
-
     sceKernelLockMutex(sfx_mutex, 1, NULL);
-
     best = 0; oldest = 0x7FFFFFFF;
     for (i = 0; i < MIX_CHANNELS; i++) {
         if (!mix_ch[i].active) { best = i; goto found; }
@@ -1209,29 +1090,22 @@ int I_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep)
     }
 found:
     c = &mix_ch[best];
-    c->data = entry->samples;
-    c->length = entry->length;
-    c->pos_fixed = 0;
-    c->lumpnum = lumpnum;
+    c->data = entry->samples; c->length = entry->length;
+    c->pos_fixed = 0; c->lumpnum = lumpnum;
     c->step_fixed = (int)(((int64_t)entry->samplerate << 16) / OUTPUT_RATE);
     if (c->step_fixed <= 0) c->step_fixed = (11025 << 16) / OUTPUT_RATE;
-
     { int vl, vr;
       if (sep < 0 || sep > 255) sep = 128;
       vr = (sep * 256) / 255; vl = 256 - vr;
       if (vl < 0) vl = 0; if (vl > 256) vl = 256;
       if (vr < 0) vr = 0; if (vr > 256) vr = 256;
-      c->vol_left = (vl * vol) / 127;
-      c->vol_right = (vr * vol) / 127;
+      c->vol_left = (vl * vol) / 127; c->vol_right = (vr * vol) / 127;
       if (c->vol_left > 256) c->vol_left = 256;
       if (c->vol_right > 256) c->vol_right = 256;
     }
-
     handle = next_handle++;
     if (next_handle > 0x7FFFFF00) next_handle = 1;
-    c->handle = handle;
-    c->active = 1;
-
+    c->handle = handle; c->active = 1;
     sceKernelUnlockMutex(sfx_mutex, 1);
     return handle;
 }
@@ -1321,8 +1195,7 @@ void I_ShutdownMusic(void)
         sceKernelLockMutex(mus_mutex, 1, NULL);
         opl_music.playing = 0;
         for (i = 0; i < OPL_NUM_VOICES; i++) {
-            opl_silence_voice(i);
-            opl_music.voices[i].active = 0;
+            opl_silence_voice(i); opl_music.voices[i].active = 0;
         }
         sceKernelUnlockMutex(mus_mutex, 1);
     }
@@ -1364,8 +1237,7 @@ void I_StopSong(void)
         sceKernelLockMutex(mus_mutex, 1, NULL);
         opl_music.playing = 0;
         for (i = 0; i < OPL_NUM_VOICES; i++) {
-            opl_silence_voice(i);
-            opl_music.voices[i].active = 0;
+            opl_silence_voice(i); opl_music.voices[i].active = 0;
         }
         sceKernelUnlockMutex(mus_mutex, 1);
     }
@@ -1378,66 +1250,41 @@ boolean I_MusicIsPlaying(void)
         sceKernelLockMutex(mus_mutex, 1, NULL);
         r = opl_music.playing ? true : false;
         sceKernelUnlockMutex(mus_mutex, 1);
-    } else {
-        r = opl_music.playing ? true : false;
-    }
+    } else { r = opl_music.playing ? true : false; }
     return r;
 }
 
 void *I_RegisterSong(void *data, int len)
 {
-    byte *d = (byte *)data;
-    byte *mus_data;
+    byte *d = (byte *)data; byte *mus_data;
     int score_offset, score_len, i;
-
     if (!data || len < 16) return NULL;
-
-    if (d[0] != 'M' || d[1] != 'U' || d[2] != 'S' || d[3] != 0x1A) {
-        debug_log("Not MUS format");
-        return (void *)1;
-    }
-
-    score_len    = d[4] | (d[5] << 8);
+    if (d[0] != 'M' || d[1] != 'U' || d[2] != 'S' || d[3] != 0x1A)
+        { debug_log("Not MUS"); return (void *)1; }
+    score_len = d[4] | (d[5] << 8);
     score_offset = d[6] | (d[7] << 8);
-
     if (score_offset >= len || score_offset < 12) return (void *)1;
     if (score_len <= 0 || score_offset + score_len > len)
         score_len = len - score_offset;
-
     mus_data = (byte *)malloc(len);
     if (!mus_data) return (void *)1;
     memcpy(mus_data, data, len);
-
     if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
-
-    if (opl_music.mus_data) {
-        free((void *)opl_music.mus_data);
-        opl_music.mus_data = NULL;
-    }
-
+    if (opl_music.mus_data) { free((void *)opl_music.mus_data); opl_music.mus_data = NULL; }
     opl_music.playing = 0;
     for (i = 0; i < OPL_NUM_VOICES; i++) {
-        opl_silence_voice(i);
-        opl_music.voices[i].active = 0;
+        opl_silence_voice(i); opl_music.voices[i].active = 0;
     }
-
-    opl_music.mus_data     = mus_data;
-    opl_music.mus_len      = len;
-    opl_music.score_start  = score_offset;
-    opl_music.score_len    = score_len;
-    opl_music.mus_pos      = score_offset;
-    opl_music.delay_left   = 0;
-    opl_music.tick_counter = opl_music.tick_samples;
-    opl_music.voice_age    = 0;
-
+    opl_music.mus_data = mus_data; opl_music.mus_len = len;
+    opl_music.score_start = score_offset; opl_music.score_len = score_len;
+    opl_music.mus_pos = score_offset; opl_music.delay_left = 0;
+    opl_music.tick_counter = opl_music.tick_samples; opl_music.voice_age = 0;
     for (i = 0; i < 16; i++) {
         opl_music.channels[i].volume = 100;
         opl_music.channels[i].patch = 0;
         opl_music.channels[i].pitch_bend = 64;
     }
-
     if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
-
     debug_logf("MUS registered: offset=%d len=%d", score_offset, score_len);
     return (void *)mus_data;
 }
@@ -1446,22 +1293,15 @@ void I_UnRegisterSong(void *handle)
 {
     int i;
     if (!handle || handle == (void *)1) return;
-
     if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
-
     opl_music.playing = 0;
     for (i = 0; i < OPL_NUM_VOICES; i++) {
-        opl_silence_voice(i);
-        opl_music.voices[i].active = 0;
+        opl_silence_voice(i); opl_music.voices[i].active = 0;
     }
-
     if (opl_music.mus_data == (const byte *)handle) {
-        opl_music.mus_data = NULL;
-        opl_music.mus_len = 0;
+        opl_music.mus_data = NULL; opl_music.mus_len = 0;
     }
-
     if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
-
     free(handle);
 }
 
@@ -1469,24 +1309,18 @@ void I_PlaySong(void *handle, boolean looping)
 {
     int i;
     if (!handle || handle == (void *)1) return;
-
     if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
-
     if (opl_music.mus_data == (const byte *)handle) {
-        opl_music.mus_pos      = opl_music.score_start;
-        opl_music.delay_left   = 0;
-        opl_music.looping      = looping ? 1 : 0;
+        opl_music.mus_pos = opl_music.score_start;
+        opl_music.delay_left = 0;
+        opl_music.looping = looping ? 1 : 0;
         opl_music.tick_counter = opl_music.tick_samples;
-
         for (i = 0; i < OPL_NUM_VOICES; i++) {
-            opl_silence_voice(i);
-            opl_music.voices[i].active = 0;
+            opl_silence_voice(i); opl_music.voices[i].active = 0;
         }
-
         opl_music.playing = 1;
-        debug_log("OPL3 music playback started");
+        debug_log("OPL3 music started");
     }
-
     if (mus_mutex >= 0) sceKernelUnlockMutex(mus_mutex, 1);
 }
 
@@ -1505,172 +1339,6 @@ void I_Endoom(byte *d) { (void)d; }
 
 char *gus_patch_path = "";
 int   gus_ram_kb = 0;
-
-/* ================================================================
-   SAVE GAME - Auto-naming for Vita (no keyboard needed)
-   ================================================================
-
-   The DOOM engine save/load menu (m_menu.c) calls M_ReadSaveStrings()
-   to populate the save slot list, and when the user picks a slot to
-   save, it enters a text-editing mode waiting for keypresses.
-
-   On Vita there is no keyboard. We hook into the save system by
-   patching the savegame description with auto-generated names.
-
-   The approach: We override M_StringWidth and provide a save hook.
-   Actually, the cleanest approach for doomgeneric is to provide
-   default save names. We do this by pre-creating the savegame
-   description files so DOOM sees named slots.
-
-   Simpler approach: We just make sure the save directory exists
-   and provide a function that the engine's save code can call.
-   Since doomgeneric's DOOM code uses the standard m_menu.c save
-   system, we need to auto-fill the save name when user confirms.
-
-   The REAL fix: We intercept the save menu. When user selects a
-   save slot and presses ENTER, instead of entering text-edit mode,
-   we immediately save with an auto-generated name.
-   ================================================================ */
-
-/* Save slot names - auto generated */
-static char vita_save_descriptions[6][32];
-static int  vita_save_hook_installed = 0;
-
-/* This gets called from our patched save routine */
-static void vita_generate_save_name(int slot, char *out, int maxlen)
-{
-    uint32_t ms = get_ms() - base_time;
-    int secs = ms / 1000;
-    int mins = secs / 60;
-    int hrs  = mins / 60;
-    snprintf(out, maxlen, "VITA SLOT %d - %d:%02d:%02d",
-             slot + 1, hrs, mins % 60, secs % 60);
-}
-
-/*
-   We need to hook into m_menu.c's save game flow.
-   In chocolate-doom / doomgeneric, M_DoSave() is called when
-   save is confirmed. The save description is in savegamestrings[].
-
-   Since we can't easily modify m_menu.c, we use a different approach:
-   We simulate keyboard input to type a name automatically when
-   the save menu enters edit mode.
-*/
-
-/* Auto-save state machine */
-static int  autosave_active = 0;
-static int  autosave_slot = -1;
-static int  autosave_phase = 0;
-static int  autosave_char_idx = 0;
-static char autosave_name[32];
-static int  autosave_delay = 0;
-
-/*
-   When we detect the user is in save mode (after selecting a slot),
-   we inject keystrokes to type a name and press ENTER.
-
-   Detection: After user presses ENTER on a save slot, the game
-   enters saveStringEnter mode. We detect this by monitoring if
-   we just sent an ENTER on a save menu item.
-*/
-
-/* Track menu state for auto-save */
-static int  menu_save_selected = 0;
-static int  save_enter_pending = 0;
-static int  save_inject_frame = 0;
-
-/*
-   Alternative simpler approach: We pre-fill save slot names by writing
-   to the savegame files' descriptions, and we make ENTER immediately
-   confirm the save (by sending the name chars + ENTER rapidly).
-*/
-
-void vita_check_autosave(void)
-{
-    int i;
-
-    if (!autosave_active) return;
-
-    if (autosave_delay > 0) {
-        autosave_delay--;
-        return;
-    }
-
-    switch (autosave_phase) {
-    case 0:
-        /* Clear existing text - send backspace several times */
-        for (i = 0; i < 24; i++) {
-            kq_push(1, KEY_BACKSPACE);
-            kq_push(0, KEY_BACKSPACE);
-        }
-        autosave_phase = 1;
-        autosave_delay = 2;
-        break;
-
-    case 1:
-        /* Type the auto-generated name */
-        if (autosave_name[autosave_char_idx] != '\0') {
-            char ch = autosave_name[autosave_char_idx];
-            kq_push(1, ch);
-            kq_push(0, ch);
-            autosave_char_idx++;
-            autosave_delay = 0;
-        } else {
-            autosave_phase = 2;
-            autosave_delay = 2;
-        }
-        break;
-
-    case 2:
-        /* Press ENTER to confirm save */
-        kq_push(1, KEY_ENTER);
-        kq_push(0, KEY_ENTER);
-        autosave_active = 0;
-        autosave_phase = 0;
-        debug_logf("Auto-save slot %d: '%s'", autosave_slot, autosave_name);
-        break;
-    }
-}
-
-/*
-   Quick-save feature: Triangle + Start = quick save to slot 0
-   This bypasses the menu entirely by calling G_SaveGame directly.
-*/
-extern void G_SaveGame(int slot, char *description);
-extern void G_LoadGame(int slot);
-extern int  gamestate;    /* GS_LEVEL = 0 in some builds */
-extern int  gameaction;
-
-/* Quick save/load state */
-static int quicksave_cooldown = 0;
-static int quickload_cooldown = 0;
-
-static void check_quicksave(SceCtrlData *pad)
-{
-    /* L + R + DPAD_UP = Quick Save to slot 0 */
-    /* L + R + DPAD_DOWN = Quick Load from slot 0 */
-    int ltrig = (pad->buttons & SCE_CTRL_LTRIGGER) != 0;
-    int rtrig = (pad->buttons & SCE_CTRL_RTRIGGER) != 0;
-    int up    = (pad->buttons & SCE_CTRL_UP) != 0;
-    int down  = (pad->buttons & SCE_CTRL_DOWN) != 0;
-
-    if (quicksave_cooldown > 0) quicksave_cooldown--;
-    if (quickload_cooldown > 0) quickload_cooldown--;
-
-    if (ltrig && rtrig && up && quicksave_cooldown == 0) {
-        char desc[32];
-        vita_generate_save_name(0, desc, sizeof(desc));
-        G_SaveGame(0, desc);
-        debug_logf("Quick saved: %s", desc);
-        quicksave_cooldown = TICRATE;  /* 1 second cooldown */
-    }
-
-    if (ltrig && rtrig && down && quickload_cooldown == 0) {
-        G_LoadGame(0);
-        debug_log("Quick loaded slot 0");
-        quickload_cooldown = TICRATE;
-    }
-}
 
 /* ================================================================
    MAIN
@@ -1703,7 +1371,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (OPL3 + AutoSave v12) ===");
+    debug_log("=== Chex Quest Vita (Quick Save v12) ===");
 
     init_display();
     if (!display_ready) {
@@ -1740,18 +1408,6 @@ int main(int argc, char **argv)
     }
 
     debug_log("Entering main loop");
-    while (1) {
-        doomgeneric_Tick();
-
-        /* Check for quick save/load combo */
-        {
-            SceCtrlData qpad;
-            sceCtrlPeekBufferPositive(0, &qpad, 1);
-            check_quicksave(&qpad);
-        }
-
-        /* Process auto-save keystroke injection */
-        vita_check_autosave();
-    }
+    while (1) { doomgeneric_Tick(); }
     return 0;
 }
