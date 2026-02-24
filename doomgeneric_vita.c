@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v15 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
