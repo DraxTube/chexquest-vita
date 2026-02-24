@@ -23,12 +23,14 @@ jobs:
           done
 
       - name: Install VitaSDK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone --depth 1 https://github.com/vitasdk/vdpm.git
           cd vdpm
-          ./bootstrap-vitasdk.sh
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
+          ./bootstrap-vitasdk.sh
           ./install-all.sh
 
       - name: Clone doomgeneric
@@ -62,14 +64,12 @@ jobs:
           import os
 
           def save_vita_png(img, path):
-              """PNG 24-bit RGB, nessun metadato extra"""
               rgb = img.convert('RGB')
               rgb.info = {}
               info = PngInfo()
               rgb.save(path, 'PNG', pnginfo=info, optimize=False)
-              # Verifica
               check = Image.open(path)
-              assert check.mode == 'RGB', f"{path}: mode={check.mode}, expected RGB"
+              assert check.mode == 'RGB', f"{path}: mode={check.mode}"
               print(f"  OK: {path} size={check.size} mode={check.mode} file={os.path.getsize(path)}B")
 
           title_img = None
@@ -81,16 +81,16 @@ jobs:
               title_img = Image.open("/tmp/chex_title.png").convert('RGB')
               print(f"Title screen OK: {title_img.size}")
           except Exception as e:
-              print(f"Title non disponibile: {e}, uso fallback")
+              print(f"Title non disponibile: {e}")
 
           try:
-              font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-              font_med = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-              font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-              font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-              font_xs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+              fb = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+              fm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+              ft = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+              fs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+              fx = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
           except:
-              font_big = font_med = font_title = font_small = font_xs = ImageFont.load_default()
+              fb = fm = ft = fs = fx = ImageFont.load_default()
 
           print("\n=== ICON0.PNG (128x128) ===")
           if title_img:
@@ -98,8 +98,8 @@ jobs:
           else:
               icon = Image.new('RGB', (128, 128), (46, 139, 87))
               d = ImageDraw.Draw(icon)
-              d.text((64, 48), "CQ", fill=(255, 215, 0), font=font_title, anchor="mm")
-              d.text((64, 80), "CHEX QUEST", fill=(255, 255, 255), font=font_xs, anchor="mm")
+              d.text((64, 48), "CQ", fill=(255, 215, 0), font=ft, anchor="mm")
+              d.text((64, 80), "CHEX QUEST", fill=(255, 255, 255), font=fx, anchor="mm")
               save_vita_png(icon, "sce_sys/icon0.png")
 
           print("\n=== BG.PNG (840x500) ===")
@@ -108,24 +108,23 @@ jobs:
           else:
               bg = Image.new('RGB', (840, 500), (15, 52, 96))
               d = ImageDraw.Draw(bg)
-              d.text((420, 230), "CHEX QUEST", fill=(255, 255, 255), font=font_big, anchor="mm")
-              d.text((420, 280), "PS Vita", fill=(200, 200, 200), font=font_small, anchor="mm")
+              d.text((420, 230), "CHEX QUEST", fill=(255, 255, 255), font=fb, anchor="mm")
+              d.text((420, 280), "PS Vita", fill=(200, 200, 200), font=fs, anchor="mm")
               save_vita_png(bg, "sce_sys/livearea/contents/bg.png")
 
           print("\n=== STARTUP.PNG (280x158) ===")
           if title_img:
               save_vita_png(title_img.resize((280, 158), Image.LANCZOS), "sce_sys/livearea/contents/startup.png")
           else:
-              startup = Image.new('RGB', (280, 158), (233, 69, 96))
-              d = ImageDraw.Draw(startup)
-              d.text((140, 65), "PLAY", fill=(255, 255, 255), font=font_med, anchor="mm")
-              d.text((140, 100), "CHEX QUEST", fill=(255, 215, 0), font=font_small, anchor="mm")
-              save_vita_png(startup, "sce_sys/livearea/contents/startup.png")
+              su = Image.new('RGB', (280, 158), (233, 69, 96))
+              d = ImageDraw.Draw(su)
+              d.text((140, 65), "PLAY", fill=(255, 255, 255), font=fm, anchor="mm")
+              d.text((140, 100), "CHEX QUEST", fill=(255, 215, 0), font=fs, anchor="mm")
+              save_vita_png(su, "sce_sys/livearea/contents/startup.png")
 
-          print("\nPNG generati OK")
+          print("\nDone")
           PYEOF
 
-          # --- TEMPLATE.XML ---
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
           printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
           printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
@@ -136,14 +135,12 @@ jobs:
           printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
           printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          echo ""
           echo "=== VALIDAZIONE ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
             pngcheck "$f"
           done
-          echo ""
           cat sce_sys/livearea/contents/template.xml
 
       - name: Build
@@ -154,41 +151,40 @@ jobs:
           cmake ..
           make -j$(nproc)
 
-      - name: Create VPK
+      - name: Create VPK manually
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
-          cd build
 
-          echo "=== Verifica SELF ==="
-          ls -la ChexQuestVita.self
-          file ChexQuestVita.self
-          echo ""
+          echo "=== Verifica self ==="
+          ls -la build/ChexQuestVita.self
 
           echo "=== Creazione param.sfo ==="
-          vita-mksfoex -s TITLE_ID=CHEX00001 -s APP_VER=01.00 "ChexQuest" param.sfo
+          vita-mksfoex -s TITLE_ID=CHEX00001 -s APP_VER=01.00 "ChexQuest" build/param.sfo
+          strings build/param.sfo
           echo ""
 
-          echo "=== Dump param.sfo ==="
-          xxd param.sfo
-          echo ""
-          echo "--- Stringhe ---"
-          strings param.sfo
+          echo "=== Assemblaggio VPK ==="
+          mkdir -p vpk_root/sce_sys/livearea/contents
+
+          cp build/ChexQuestVita.self vpk_root/eboot.bin
+          cp build/param.sfo vpk_root/sce_sys/param.sfo
+          cp sce_sys/icon0.png vpk_root/sce_sys/icon0.png
+          cp sce_sys/livearea/contents/bg.png vpk_root/sce_sys/livearea/contents/bg.png
+          cp sce_sys/livearea/contents/startup.png vpk_root/sce_sys/livearea/contents/startup.png
+          cp sce_sys/livearea/contents/template.xml vpk_root/sce_sys/livearea/contents/template.xml
+
+          echo "=== Contenuto vpk_root ==="
+          find vpk_root -type f -exec ls -la {} \;
           echo ""
 
-          echo "=== Creazione VPK ==="
-          vita-pack-vpk \
-            -s param.sfo \
-            -b ChexQuestVita.self \
-            -a ../sce_sys/icon0.png=sce_sys/icon0.png \
-            -a ../sce_sys/livearea/contents/bg.png=sce_sys/livearea/contents/bg.png \
-            -a ../sce_sys/livearea/contents/startup.png=sce_sys/livearea/contents/startup.png \
-            -a ../sce_sys/livearea/contents/template.xml=sce_sys/livearea/contents/template.xml \
-            ChexQuestVita.vpk
+          cd vpk_root
+          zip -0 -r ../build/ChexQuestVita.vpk .
+          cd ..
 
           echo ""
-          echo "=== VPK creato ==="
-          ls -lh ChexQuestVita.vpk
+          echo "=== VPK finale ==="
+          ls -lh build/ChexQuestVita.vpk
 
       - name: Verify VPK
         run: |
@@ -213,11 +209,11 @@ jobs:
           done
 
           echo ""
-          echo "=== param.sfo nel VPK ==="
+          echo "=== param.sfo ==="
           strings /tmp/vpk_check/sce_sys/param.sfo
-          echo ""
 
-          echo "=== PNG check ==="
+          echo ""
+          echo "=== PNG ==="
           for png in sce_sys/icon0.png \
                      sce_sys/livearea/contents/bg.png \
                      sce_sys/livearea/contents/startup.png; do
