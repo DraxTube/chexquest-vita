@@ -127,7 +127,32 @@ target_link_libraries(${PROJECT_NAME}
 
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
 
+# ── Collect Vita assets (only if they exist) ──
+set(SCE_SYS "${CMAKE_SOURCE_DIR}/sce_sys")
+set(VPK_ASSETS "")
+
+macro(vpk_add_asset src dst)
+    if(EXISTS "${src}")
+        list(APPEND VPK_ASSETS "FILE" "${src}" "${dst}")
+        message(STATUS "VPK asset: ${dst}")
+    else()
+        message(STATUS "VPK asset SKIP (not found): ${src}")
+    endif()
+endmacro()
+
+vpk_add_asset("${SCE_SYS}/icon0.png"
+              "sce_sys/icon0.png")
+vpk_add_asset("${SCE_SYS}/pic0.png"
+              "sce_sys/pic0.png")
+vpk_add_asset("${SCE_SYS}/livearea/contents/bg.png"
+              "sce_sys/livearea/contents/bg.png")
+vpk_add_asset("${SCE_SYS}/livearea/contents/startup.png"
+              "sce_sys/livearea/contents/startup.png")
+vpk_add_asset("${SCE_SYS}/livearea/contents/template.xml"
+              "sce_sys/livearea/contents/template.xml")
+
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
     VERSION ${VITA_VERSION}
     NAME ${VITA_APP_NAME}
+    ${VPK_ASSETS}
 )
