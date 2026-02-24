@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music Fixed v10 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – OPL3 Music Fixed v11 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -360,7 +360,7 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 }
 
 /* ================================================================
-   OPL3 MUSIC ENGINE — GENMIDI layout corretto
+   OPL3 MUSIC ENGINE
    ================================================================ */
 
 #define GENMIDI_NUM_INSTRS   175
@@ -370,28 +370,28 @@ static sfx_cache_entry_t *sfx_cache_get(int lumpnum)
 
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t tremolo;    /* reg 0x20 */
-    uint8_t attack;     /* reg 0x60 */
-    uint8_t sustain;    /* reg 0x80 */
-    uint8_t waveform;   /* reg 0xE0 */
-    uint8_t scale;      /* reg 0x40 upper 2 bits: KSL */
-    uint8_t level;      /* reg 0x40 lower 6 bits: TL (0=loud 63=quiet) */
-} genmidi_op_t;         /* 6 bytes */
+    uint8_t tremolo;
+    uint8_t attack;
+    uint8_t sustain;
+    uint8_t waveform;
+    uint8_t scale;
+    uint8_t level;
+} genmidi_op_t;
 
 typedef struct {
-    genmidi_op_t modulator;    /* 6 bytes */
-    uint8_t      feedback;     /* reg 0xC0: feedback/connection */
-    genmidi_op_t carrier;      /* 6 bytes */
-    uint8_t      unused;       /* padding */
+    genmidi_op_t modulator;
+    uint8_t      feedback;
+    genmidi_op_t carrier;
+    uint8_t      unused;
     int16_t      base_note_offset;
-} genmidi_voice_t;             /* 16 bytes */
+} genmidi_voice_t;
 
 typedef struct {
     uint16_t        flags;
     uint8_t         fine_tuning;
     uint8_t         fixed_note;
-    genmidi_voice_t voices[2]; /* 32 bytes */
-} genmidi_instr_t;             /* 36 bytes */
+    genmidi_voice_t voices[2];
+} genmidi_instr_t;
 #pragma pack(pop)
 
 static const uint8_t opl_mod_offset[9] = {
@@ -928,9 +928,9 @@ static void start_audio_system(void)
     memset(opl_reg_b0, 0, sizeof(opl_reg_b0));
     OPL3_Reset(&opl_music.chip, OUTPUT_RATE);
 
-    opl_write(0x01, 0x20);  /* Enable waveform select */
-    opl_write(0x08, 0x40);  /* Note-sel */
-    opl_write(0xBD, 0x00);  /* Percussion off */
+    opl_write(0x01, 0x20);
+    opl_write(0x08, 0x40);
+    opl_write(0xBD, 0x00);
     for (i = 0; i < 9; i++) {
         opl_silence_voice(i);
     }
@@ -995,11 +995,10 @@ uint32_t DG_GetTicksMs(void) { return get_ms() - base_time; }
 
 int DG_GetKey(int *pressed, unsigned char *key)
 {
-    if (kq_r == kq_w) return 0;
-    *pressed = kq[kq_r].pressed;
-    *key     = kq[kq_r].key;
-    kq_r = (kq_r + 1) % KQUEUE_SZ;
-    return 1;
+    /* Input is handled entirely via D_PostEvent in I_StartTic */
+    (void)pressed;
+    (void)key;
+    return 0;
 }
 
 void DG_SetWindowTitle(const char *t) { (void)t; }
@@ -1022,7 +1021,7 @@ void I_Quit(void)
     sceKernelExitProcess(0);
 }
 
-void I_Error(char *error, ...)
+void I_Error(const char *error, ...)
 {
     char buf[512]; va_list a;
     va_start(a, error); vsnprintf(buf, sizeof(buf), error, a); va_end(a);
@@ -1135,7 +1134,7 @@ void I_StartTic(void)
     event_t event;
     do_poll_input();
     while (kq_r != kq_w) {
-        event.type = kq[kq_r].pressed ? ev_keydown : ev_keyup;
+        event.type  = kq[kq_r].pressed ? ev_keydown : ev_keyup;
         event.data1 = kq[kq_r].key;
         event.data2 = kq[kq_r].key;
         event.data3 = 0;
@@ -1373,7 +1372,18 @@ void I_StopSong(void)
     }
 }
 
-boolean I_MusicIsPlaying(void) { return opl_music.playing ? true : false; }
+boolean I_MusicIsPlaying(void)
+{
+    boolean r;
+    if (mus_mutex >= 0) {
+        sceKernelLockMutex(mus_mutex, 1, NULL);
+        r = opl_music.playing ? true : false;
+        sceKernelUnlockMutex(mus_mutex, 1);
+    } else {
+        r = opl_music.playing ? true : false;
+    }
+    return r;
+}
 
 void *I_RegisterSong(void *data, int len)
 {
@@ -1400,6 +1410,12 @@ void *I_RegisterSong(void *data, int len)
     memcpy(mus_data, data, len);
 
     if (mus_mutex >= 0) sceKernelLockMutex(mus_mutex, 1, NULL);
+
+    /* Free previous music data if any */
+    if (opl_music.mus_data) {
+        free((void *)opl_music.mus_data);
+        opl_music.mus_data = NULL;
+    }
 
     opl_music.playing = 0;
     for (i = 0; i < OPL_NUM_VOICES; i++) {
@@ -1523,7 +1539,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (OPL3 GENMIDI fixed v10) ===");
+    debug_log("=== Chex Quest Vita (OPL3 GENMIDI fixed v11) ===");
 
     init_display();
     if (!display_ready) {
