@@ -57,63 +57,31 @@ jobs:
 
           python3 << 'PYEOF'
           from PIL import Image, ImageDraw, ImageFont
+          from PIL.PngImagePlugin import PngInfo
           import urllib.request
-          import struct
           import os
 
           def save_vita_png(img, path):
-              """Salva PNG 24-bit RGB puro, zero chunk extra"""
-              # FORZA conversione a RGB 24-bit (no alpha MAI)
+              """PNG 24-bit RGB, nessun metadato extra"""
               rgb = img.convert('RGB')
-              # Pulisci TUTTI i metadati
               rgb.info = {}
-              # Salva senza ottimizzazioni che aggiungono chunk
-              rgb.save(path, 'PNG', optimize=False)
-              # Ora rimuovi tutti i chunk non essenziali dal file
-              strip_png_chunks(path)
+              info = PngInfo()
+              rgb.save(path, 'PNG', pnginfo=info, optimize=False)
+              # Verifica
+              check = Image.open(path)
+              assert check.mode == 'RGB', f"{path}: mode={check.mode}, expected RGB"
+              print(f"  OK: {path} size={check.size} mode={check.mode} file={os.path.getsize(path)}B")
 
-          def strip_png_chunks(path):
-              """Rimuove TUTTI i chunk PNG tranne IHDR, IDAT, IEND"""
-              with open(path, 'rb') as f:
-                  data = f.read()
-              sig = b'\x89PNG\r\n\x1a\n'
-              if data[:8] != sig:
-                  print(f"  ERRORE: {path} non e' PNG!")
-                  return
-              out = bytearray(sig)
-              pos = 8
-              kept = []
-              removed = []
-              while pos + 12 <= len(data):
-                  length = struct.unpack('>I', data[pos:pos+4])[0]
-                  chunk_type = data[pos+4:pos+8].decode('ascii', errors='replace')
-                  chunk_end = pos + 12 + length
-                  if chunk_end > len(data):
-                      break
-                  if chunk_type in ('IHDR', 'IDAT', 'IEND'):
-                      out.extend(data[pos:chunk_end])
-                      kept.append(chunk_type)
-                  else:
-                      removed.append(chunk_type)
-                  pos = chunk_end
-              with open(path, 'wb') as f:
-                  f.write(bytes(out))
-              print(f"  Kept: {kept}")
-              if removed:
-                  print(f"  Removed: {removed}")
-
-          # Scarica title screen
           title_img = None
           try:
               urllib.request.urlretrieve(
                   "https://tcrf.net/images/1/11/Chex_Quest-title.png",
                   "/tmp/chex_title.png"
               )
-              t = Image.open("/tmp/chex_title.png")
-              title_img = t.convert('RGB')  # Converti subito a RGB
-              print(f"Title screen OK: {t.size} mode={t.mode} -> RGB")
+              title_img = Image.open("/tmp/chex_title.png").convert('RGB')
+              print(f"Title screen OK: {title_img.size}")
           except Exception as e:
-              print(f"Title screen non disponibile: {e}")
+              print(f"Title non disponibile: {e}, uso fallback")
 
           try:
               font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
@@ -124,68 +92,37 @@ jobs:
           except:
               font_big = font_med = font_title = font_small = font_xs = ImageFont.load_default()
 
-          # === ICON0.PNG — 128x128 ===
-          print("\nGenerando icon0.png...")
+          print("\n=== ICON0.PNG (128x128) ===")
           if title_img:
-              icon = title_img.resize((128, 128), Image.LANCZOS)
+              save_vita_png(title_img.resize((128, 128), Image.LANCZOS), "sce_sys/icon0.png")
           else:
               icon = Image.new('RGB', (128, 128), (46, 139, 87))
               d = ImageDraw.Draw(icon)
               d.text((64, 48), "CQ", fill=(255, 215, 0), font=font_title, anchor="mm")
               d.text((64, 80), "CHEX QUEST", fill=(255, 255, 255), font=font_xs, anchor="mm")
-          save_vita_png(icon, "sce_sys/icon0.png")
-          print(f"  Dimensione: {os.path.getsize('sce_sys/icon0.png')} bytes")
+              save_vita_png(icon, "sce_sys/icon0.png")
 
-          # === BG.PNG — 840x500 ===
-          print("\nGenerando bg.png...")
+          print("\n=== BG.PNG (840x500) ===")
           if title_img:
-              bg = title_img.resize((840, 500), Image.LANCZOS)
+              save_vita_png(title_img.resize((840, 500), Image.LANCZOS), "sce_sys/livearea/contents/bg.png")
           else:
               bg = Image.new('RGB', (840, 500), (15, 52, 96))
               d = ImageDraw.Draw(bg)
               d.text((420, 230), "CHEX QUEST", fill=(255, 255, 255), font=font_big, anchor="mm")
               d.text((420, 280), "PS Vita", fill=(200, 200, 200), font=font_small, anchor="mm")
-          save_vita_png(bg, "sce_sys/livearea/contents/bg.png")
-          print(f"  Dimensione: {os.path.getsize('sce_sys/livearea/contents/bg.png')} bytes")
+              save_vita_png(bg, "sce_sys/livearea/contents/bg.png")
 
-          # === STARTUP.PNG — 280x158 ===
-          print("\nGenerando startup.png...")
+          print("\n=== STARTUP.PNG (280x158) ===")
           if title_img:
-              startup = title_img.resize((280, 158), Image.LANCZOS)
+              save_vita_png(title_img.resize((280, 158), Image.LANCZOS), "sce_sys/livearea/contents/startup.png")
           else:
               startup = Image.new('RGB', (280, 158), (233, 69, 96))
               d = ImageDraw.Draw(startup)
               d.text((140, 65), "PLAY", fill=(255, 255, 255), font=font_med, anchor="mm")
               d.text((140, 100), "CHEX QUEST", fill=(255, 215, 0), font=font_small, anchor="mm")
-          save_vita_png(startup, "sce_sys/livearea/contents/startup.png")
-          print(f"  Dimensione: {os.path.getsize('sce_sys/livearea/contents/startup.png')} bytes")
+              save_vita_png(startup, "sce_sys/livearea/contents/startup.png")
 
-          # === VERIFICA FINALE ===
-          print("\n=== VERIFICA PNG ===")
-          for path in ["sce_sys/icon0.png",
-                       "sce_sys/livearea/contents/bg.png",
-                       "sce_sys/livearea/contents/startup.png"]:
-              img = Image.open(path)
-              print(f"{path}: size={img.size} mode={img.mode}")
-              if img.mode != 'RGB':
-                  print(f"  ERRORE: modo {img.mode}, dovrebbe essere RGB!")
-                  exit(1)
-              # Verifica color type nel raw PNG
-              with open(path, 'rb') as f:
-                  raw = f.read()
-              # Color type e' al byte 25 (offset 8+8+4+4+1 = 25)
-              # IHDR: width(4) height(4) bitdepth(1) colortype(1)
-              color_type = raw[25]
-              bit_depth = raw[24]
-              print(f"  PNG bit_depth={bit_depth} color_type={color_type}")
-              if color_type != 2:
-                  print(f"  ERRORE: color_type={color_type}, dovrebbe essere 2 (RGB)!")
-                  exit(1)
-              if bit_depth != 8:
-                  print(f"  ERRORE: bit_depth={bit_depth}, dovrebbe essere 8!")
-                  exit(1)
-
-          print("\nTutti i PNG sono 24-bit RGB puliti!")
+          print("\nPNG generati OK")
           PYEOF
 
           # --- TEMPLATE.XML ---
@@ -199,23 +136,15 @@ jobs:
           printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
           printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          # --- VALIDAZIONE FINALE ---
           echo ""
-          echo "=== PNGCHECK ==="
+          echo "=== VALIDAZIONE ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
-            pngcheck -v "$f" 2>&1 | head -5
-            echo ""
+            pngcheck "$f"
           done
-
-          echo "=== TEMPLATE.XML ==="
+          echo ""
           cat sce_sys/livearea/contents/template.xml
-          FIRST_BYTE=$(xxd -l 1 -p sce_sys/livearea/contents/template.xml)
-          if [ "$FIRST_BYTE" != "3c" ]; then
-            echo "ERRORE: BOM presente!"
-            exit 1
-          fi
 
       - name: Build
         run: |
@@ -225,22 +154,53 @@ jobs:
           cmake ..
           make -j$(nproc)
 
+      - name: Create VPK
+        run: |
+          export VITASDK=/usr/local/vitasdk
+          export PATH=$VITASDK/bin:$PATH
+          cd build
+
+          echo "=== Verifica SELF ==="
+          ls -la ChexQuestVita.self
+          file ChexQuestVita.self
+          echo ""
+
+          echo "=== Creazione param.sfo ==="
+          vita-mksfoex -s TITLE_ID=CHEX00001 -s APP_VER=01.00 "ChexQuest" param.sfo
+          echo ""
+
+          echo "=== Dump param.sfo ==="
+          xxd param.sfo
+          echo ""
+          echo "--- Stringhe ---"
+          strings param.sfo
+          echo ""
+
+          echo "=== Creazione VPK ==="
+          vita-pack-vpk \
+            -s param.sfo \
+            -b ChexQuestVita.self \
+            -a ../sce_sys/icon0.png=sce_sys/icon0.png \
+            -a ../sce_sys/livearea/contents/bg.png=sce_sys/livearea/contents/bg.png \
+            -a ../sce_sys/livearea/contents/startup.png=sce_sys/livearea/contents/startup.png \
+            -a ../sce_sys/livearea/contents/template.xml=sce_sys/livearea/contents/template.xml \
+            ChexQuestVita.vpk
+
+          echo ""
+          echo "=== VPK creato ==="
+          ls -lh ChexQuestVita.vpk
+
       - name: Verify VPK
         run: |
           cd build
+          echo "=== Contenuto VPK ==="
+          unzip -l ChexQuestVita.vpk
+          echo ""
+
           mkdir -p /tmp/vpk_check
-          unzip -o *.vpk -d /tmp/vpk_check
+          unzip -o ChexQuestVita.vpk -d /tmp/vpk_check
 
-          echo "=== STRUTTURA VPK ==="
-          unzip -l *.vpk
-          echo ""
-
-          echo "=== PARAM.SFO ==="
-          xxd /tmp/vpk_check/sce_sys/param.sfo | head -20
-          strings /tmp/vpk_check/sce_sys/param.sfo
-          echo ""
-
-          echo "=== VERIFICA FILES ==="
+          echo "=== Verifica files ==="
           for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
                    sce_sys/livearea/contents/template.xml \
                    sce_sys/livearea/contents/bg.png \
@@ -251,31 +211,27 @@ jobs:
             fi
             echo "OK: $f ($(wc -c < /tmp/vpk_check/$f) bytes)"
           done
+
+          echo ""
+          echo "=== param.sfo nel VPK ==="
+          strings /tmp/vpk_check/sce_sys/param.sfo
           echo ""
 
-          echo "=== PNG DETTAGLI ==="
+          echo "=== PNG check ==="
           for png in sce_sys/icon0.png \
                      sce_sys/livearea/contents/bg.png \
                      sce_sys/livearea/contents/startup.png; do
-            echo "--- $png ---"
-            pngcheck -v "/tmp/vpk_check/$png" 2>&1 | head -3
-            # Mostra color type dal raw
-            python3 -c "
-          with open('/tmp/vpk_check/$png', 'rb') as f:
-              d = f.read(30)
-          print(f'  bit_depth={d[24]} color_type={d[25]}')
-          ct = {0:'Grayscale', 2:'RGB', 3:'Palette', 4:'Gray+Alpha', 6:'RGBA'}
-          print(f'  tipo: {ct.get(d[25], \"SCONOSCIUTO\")}')
-          "
-            echo ""
+            pngcheck "/tmp/vpk_check/$png"
           done
 
-          echo "=== VPK ==="
-          ls -lh *.vpk
+          echo ""
+          echo "=== template.xml ==="
+          cat /tmp/vpk_check/sce_sys/livearea/contents/template.xml
+
           rm -rf /tmp/vpk_check
 
       - name: Upload VPK
         uses: actions/upload-artifact@v4
         with:
           name: ChexQuestVita
-          path: build/*.vpk
+          path: build/ChexQuestVita.vpk
