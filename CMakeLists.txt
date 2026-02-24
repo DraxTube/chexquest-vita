@@ -127,9 +127,6 @@ target_link_libraries(${PROJECT_NAME}
 
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
 
-# SOLO icon0.png — NESSUN file LiveArea
-vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
-    VERSION ${VITA_VERSION}
-    NAME ${VITA_APP_NAME}
-    FILE ${CMAKE_SOURCE_DIR}/sce_sys/icon0.png sce_sys/icon0.png
-)
+set(ICON_PATH "${CMAKE_SOURCE_DIR}/sce_sys/icon0.png")
+
+vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self VERSION ${VITA_VERSION} NAME ${VITA_APP_NAME} FILE ${ICON_PATH} sce_sys/icon0.png)
