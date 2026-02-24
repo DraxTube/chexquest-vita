@@ -127,44 +127,7 @@ target_link_libraries(${PROJECT_NAME}
 
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
 
-# --- Includi assets nel VPK ---
-set(VITA_ASSETS_DIR "${CMAKE_SOURCE_DIR}/sce_sys")
-
-# Controlla quali asset esistono e aggiungili
-set(VPK_EXTRA_FILES "")
-
-if(EXISTS "${VITA_ASSETS_DIR}/icon0.png")
-    list(APPEND VPK_EXTRA_FILES
-        "FILE" "${VITA_ASSETS_DIR}/icon0.png" "sce_sys/icon0.png")
-    message(STATUS "Including icon0.png")
-endif()
-
-if(EXISTS "${VITA_ASSETS_DIR}/pic0.png")
-    list(APPEND VPK_EXTRA_FILES
-        "FILE" "${VITA_ASSETS_DIR}/pic0.png" "sce_sys/pic0.png")
-    message(STATUS "Including pic0.png")
-endif()
-
-if(EXISTS "${VITA_ASSETS_DIR}/livearea/contents/bg.png")
-    list(APPEND VPK_EXTRA_FILES
-        "FILE" "${VITA_ASSETS_DIR}/livearea/contents/bg.png" "sce_sys/livearea/contents/bg.png")
-    message(STATUS "Including bg.png")
-endif()
-
-if(EXISTS "${VITA_ASSETS_DIR}/livearea/contents/startup.png")
-    list(APPEND VPK_EXTRA_FILES
-        "FILE" "${VITA_ASSETS_DIR}/livearea/contents/startup.png" "sce_sys/livearea/contents/startup.png")
-    message(STATUS "Including startup.png")
-endif()
-
-if(EXISTS "${VITA_ASSETS_DIR}/livearea/contents/template.xml")
-    list(APPEND VPK_EXTRA_FILES
-        "FILE" "${VITA_ASSETS_DIR}/livearea/contents/template.xml" "sce_sys/livearea/contents/template.xml")
-    message(STATUS "Including template.xml")
-endif()
-
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
     VERSION ${VITA_VERSION}
     NAME ${VITA_APP_NAME}
-    ${VPK_EXTRA_FILES}
 )
