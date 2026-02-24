@@ -51,80 +51,56 @@ jobs:
 
       - name: Generate LiveArea assets
         run: |
-          sudo apt-get install -y python3-pip pngcheck
-          pip3 install Pillow
-
           rm -rf sce_sys
           mkdir -p sce_sys/livearea/contents
 
           python3 << 'PYEOF'
-          from PIL import Image, ImageDraw, ImageFont
-          from PIL.PngImagePlugin import PngInfo
-          import urllib.request
-          import os
+          import struct, zlib, os
 
-          def save_vita_png(img, path):
-              rgb = img.convert('RGB')
-              rgb.info = {}
-              info = PngInfo()
-              rgb.save(path, 'PNG', pnginfo=info, optimize=False)
-              check = Image.open(path)
-              assert check.mode == 'RGB', f"{path}: mode={check.mode}"
-              print(f"  OK: {path} size={check.size} mode={check.mode} file={os.path.getsize(path)}B")
+          def make_png(width, height, r, g, b, path):
+              """Crea PNG RGB 24-bit minimale - solo IHDR+IDAT+IEND"""
+              def chunk(ctype, data):
+                  c = ctype + data
+                  crc = zlib.crc32(c) & 0xffffffff
+                  return struct.pack('>I', len(data)) + c + struct.pack('>I', crc)
 
-          title_img = None
-          try:
-              urllib.request.urlretrieve(
-                  "https://tcrf.net/images/1/11/Chex_Quest-title.png",
-                  "/tmp/chex_title.png"
-              )
-              title_img = Image.open("/tmp/chex_title.png").convert('RGB')
-              print(f"Title screen OK: {title_img.size}")
-          except Exception as e:
-              print(f"Title non disponibile: {e}")
+              sig = b'\x89PNG\r\n\x1a\n'
 
-          try:
-              fb = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-              fm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-              ft = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-              fs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-              fx = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
-          except:
-              fb = fm = ft = fs = fx = ImageFont.load_default()
+              # IHDR: width, height, bit_depth=8, color_type=2(RGB), compress=0, filter=0, interlace=0
+              ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
 
-          print("\n=== ICON0.PNG (128x128) ===")
-          if title_img:
-              save_vita_png(title_img.resize((128, 128), Image.LANCZOS), "sce_sys/icon0.png")
-          else:
-              icon = Image.new('RGB', (128, 128), (46, 139, 87))
-              d = ImageDraw.Draw(icon)
-              d.text((64, 48), "CQ", fill=(255, 215, 0), font=ft, anchor="mm")
-              d.text((64, 80), "CHEX QUEST", fill=(255, 255, 255), font=fx, anchor="mm")
-              save_vita_png(icon, "sce_sys/icon0.png")
+              # Pixel data: filter_byte(0) + RGB per ogni riga
+              row = bytes([r, g, b] * width)
+              raw = b''
+              for y in range(height):
+                  raw += b'\x00' + row
 
-          print("\n=== BG.PNG (840x500) ===")
-          if title_img:
-              save_vita_png(title_img.resize((840, 500), Image.LANCZOS), "sce_sys/livearea/contents/bg.png")
-          else:
-              bg = Image.new('RGB', (840, 500), (15, 52, 96))
-              d = ImageDraw.Draw(bg)
-              d.text((420, 230), "CHEX QUEST", fill=(255, 255, 255), font=fb, anchor="mm")
-              d.text((420, 280), "PS Vita", fill=(200, 200, 200), font=fs, anchor="mm")
-              save_vita_png(bg, "sce_sys/livearea/contents/bg.png")
+              idat = zlib.compress(raw, 9)
 
-          print("\n=== STARTUP.PNG (280x158) ===")
-          if title_img:
-              save_vita_png(title_img.resize((280, 158), Image.LANCZOS), "sce_sys/livearea/contents/startup.png")
-          else:
-              su = Image.new('RGB', (280, 158), (233, 69, 96))
-              d = ImageDraw.Draw(su)
-              d.text((140, 65), "PLAY", fill=(255, 255, 255), font=fm, anchor="mm")
-              d.text((140, 100), "CHEX QUEST", fill=(255, 215, 0), font=fs, anchor="mm")
-              save_vita_png(su, "sce_sys/livearea/contents/startup.png")
+              png = sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
 
-          print("\nDone")
+              os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
+              with open(path, 'wb') as f:
+                  f.write(png)
+
+              # Verifica
+              with open(path, 'rb') as f:
+                  d = f.read(30)
+              assert d[:8] == b'\x89PNG\r\n\x1a\n', "Header PNG invalido"
+              assert d[24] == 8, f"bit_depth={d[24]}, atteso 8"
+              assert d[25] == 2, f"color_type={d[25]}, atteso 2 (RGB)"
+              fsize = os.path.getsize(path)
+              print(f"OK: {path} ({width}x{height}, RGB 24-bit, {fsize} bytes)")
+
+          # Colori: verde scuro Chex-like
+          make_png(128, 128,  46, 139,  87, "sce_sys/icon0.png")
+          make_png(840, 500,  15,  52,  96, "sce_sys/livearea/contents/bg.png")
+          make_png(280, 158, 233,  69,  96, "sce_sys/livearea/contents/startup.png")
+
+          print("\nTutti i PNG generati - minimali, solo IHDR+IDAT+IEND, RGB 24-bit")
           PYEOF
 
+          # --- TEMPLATE.XML ---
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
           printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
           printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
@@ -135,13 +111,19 @@ jobs:
           printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
           printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          echo "=== VALIDAZIONE ==="
+          echo ""
+          echo "=== VERIFICA ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
-            pngcheck "$f"
+            echo -n "$f: "
+            xxd -l 30 -p "$f" | head -1
           done
+          echo ""
+          echo "=== template.xml ==="
           cat sce_sys/livearea/contents/template.xml
+          echo ""
+          xxd -l 4 -p sce_sys/livearea/contents/template.xml
 
       - name: Build
         run: |
@@ -151,50 +133,55 @@ jobs:
           cmake ..
           make -j$(nproc)
 
-      - name: Create VPK manually
+      - name: Create VPK
         run: |
           export VITASDK=/usr/local/vitasdk
           export PATH=$VITASDK/bin:$PATH
 
-          echo "=== Verifica self ==="
           ls -la build/ChexQuestVita.self
 
-          echo "=== Creazione param.sfo ==="
+          # Crea param.sfo
           vita-mksfoex -s TITLE_ID=CHEX00001 -s APP_VER=01.00 "ChexQuest" build/param.sfo
+          echo "=== param.sfo ==="
           strings build/param.sfo
-          echo ""
 
-          echo "=== Assemblaggio VPK ==="
+          # Assembla struttura VPK
           mkdir -p vpk_root/sce_sys/livearea/contents
 
           cp build/ChexQuestVita.self vpk_root/eboot.bin
-          cp build/param.sfo vpk_root/sce_sys/param.sfo
-          cp sce_sys/icon0.png vpk_root/sce_sys/icon0.png
-          cp sce_sys/livearea/contents/bg.png vpk_root/sce_sys/livearea/contents/bg.png
-          cp sce_sys/livearea/contents/startup.png vpk_root/sce_sys/livearea/contents/startup.png
+          cp build/param.sfo         vpk_root/sce_sys/param.sfo
+          cp sce_sys/icon0.png       vpk_root/sce_sys/icon0.png
+          cp sce_sys/livearea/contents/bg.png      vpk_root/sce_sys/livearea/contents/bg.png
+          cp sce_sys/livearea/contents/startup.png  vpk_root/sce_sys/livearea/contents/startup.png
           cp sce_sys/livearea/contents/template.xml vpk_root/sce_sys/livearea/contents/template.xml
 
-          echo "=== Contenuto vpk_root ==="
-          find vpk_root -type f -exec ls -la {} \;
+          echo ""
+          echo "=== Struttura vpk_root ==="
+          find vpk_root -type f | sort
           echo ""
 
+          # Crea ZIP senza prefisso ./ — IMPORTANTE per la Vita
           cd vpk_root
-          zip -0 -r ../build/ChexQuestVita.vpk .
+          zip -0 ../build/ChexQuestVita.vpk \
+            eboot.bin \
+            sce_sys/param.sfo \
+            sce_sys/icon0.png \
+            sce_sys/livearea/contents/bg.png \
+            sce_sys/livearea/contents/startup.png \
+            sce_sys/livearea/contents/template.xml
           cd ..
 
           echo ""
-          echo "=== VPK finale ==="
           ls -lh build/ChexQuestVita.vpk
 
       - name: Verify VPK
         run: |
-          cd build
           echo "=== Contenuto VPK ==="
-          unzip -l ChexQuestVita.vpk
+          unzip -l build/ChexQuestVita.vpk
           echo ""
 
           mkdir -p /tmp/vpk_check
-          unzip -o ChexQuestVita.vpk -d /tmp/vpk_check
+          unzip -o build/ChexQuestVita.vpk -d /tmp/vpk_check
 
           echo "=== Verifica files ==="
           for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
@@ -213,11 +200,15 @@ jobs:
           strings /tmp/vpk_check/sce_sys/param.sfo
 
           echo ""
-          echo "=== PNG ==="
+          echo "=== PNG headers ==="
           for png in sce_sys/icon0.png \
                      sce_sys/livearea/contents/bg.png \
                      sce_sys/livearea/contents/startup.png; do
-            pngcheck "/tmp/vpk_check/$png"
+            echo -n "$png: bit_depth="
+            python3 -c "
+          with open('/tmp/vpk_check/$png','rb') as f: d=f.read(30)
+          print(f'{d[24]} color_type={d[25]} ({\"RGB\" if d[25]==2 else \"ALTRO\"})')
+          "
           done
 
           echo ""
