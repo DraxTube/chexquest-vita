@@ -36,58 +36,62 @@ fi
 
 echo "TITLE=$TITLE  LOGO=$LOGO"
 
+VITA_PNG_OPTS="-strip -interlace none -define png:color-type=6 -define png:exclude-chunks=all -depth 8"
+
 # icon0.png — 128x128
 if [ -n "$LOGO" ]; then
     convert "$LOGO" -resize 128x128^ -gravity center -extent 128x128 \
-        -depth 8 -strip PNG32:sce_sys/icon0.png
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/icon0.png
 else
     convert -size 128x128 xc:'#2E8B57' -fill '#FFD700' -gravity center \
         -pointsize 28 -annotate +0-8 'CQ' -fill white -pointsize 11 \
-        -annotate +0+16 'CHEX QUEST' -depth 8 -strip PNG32:sce_sys/icon0.png
+        -annotate +0+16 'CHEX QUEST' \
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/icon0.png
 fi
 
-# pic0.png — 960x544
+# pic0.png — 960x544 (optional, not included in VPK)
 if [ -n "$TITLE" ]; then
     convert "$TITLE" -resize 960x544^ -gravity center -extent 960x544 \
-        -depth 8 -strip PNG32:sce_sys/pic0.png
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/pic0.png
 else
     convert -size 960x544 xc:'#1a1a2e' -fill '#FFD700' -gravity center \
         -pointsize 72 -annotate +0-40 'CHEX QUEST' -fill white -pointsize 28 \
-        -annotate +0+30 'PS Vita Edition' -depth 8 -strip PNG32:sce_sys/pic0.png
+        -annotate +0+30 'PS Vita Edition' \
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/pic0.png
 fi
 
 # bg.png — 840x500
 if [ -n "$TITLE" ]; then
     convert "$TITLE" -resize 840x500^ -gravity center -extent 840x500 \
-        -depth 8 -strip PNG32:sce_sys/livearea/contents/bg.png
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/livearea/contents/bg.png
 else
     convert -size 840x500 xc:'#0f3460' -fill white -gravity center \
         -pointsize 48 -annotate +0-20 'CHEX QUEST' -fill '#cccccc' -pointsize 20 \
-        -annotate +0+30 'PS Vita' -depth 8 -strip PNG32:sce_sys/livearea/contents/bg.png
+        -annotate +0+30 'PS Vita' \
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/livearea/contents/bg.png
 fi
 
 # startup.png — 280x158
 if [ -n "$LOGO" ]; then
     convert "$LOGO" -resize 280x158^ -gravity center -extent 280x158 \
-        -depth 8 -strip PNG32:sce_sys/livearea/contents/startup.png
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/livearea/contents/startup.png
 else
     convert -size 280x158 xc:'#e94560' -fill white -gravity center \
         -pointsize 36 -annotate +0-8 'PLAY' -fill '#FFD700' -pointsize 14 \
-        -annotate +0+22 'CHEX QUEST' -depth 8 -strip PNG32:sce_sys/livearea/contents/startup.png
+        -annotate +0+22 'CHEX QUEST' \
+        -alpha on -alpha set $VITA_PNG_OPTS sce_sys/livearea/contents/startup.png
 fi
 
 # template.xml
-cat > sce_sys/livearea/contents/template.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<livearea style="a1" format-ver="01.00" content-rev="1">
-  <livearea-bg>
-    <image>bg.png</image>
-  </livearea-bg>
-  <gate>
-    <startup-image>startup.png</startup-image>
-  </gate>
-</livearea>
-EOF
+printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
+printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
+printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+printf '    <image>bg.png</image>\n' >> sce_sys/livearea/contents/template.xml
+printf '  </livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+printf '  <gate>\n' >> sce_sys/livearea/contents/template.xml
+printf '    <startup-image>startup.png</startup-image>\n' >> sce_sys/livearea/contents/template.xml
+printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
+printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
 echo ""
 echo "=== Assets generati ==="
@@ -98,12 +102,11 @@ for f in sce_sys/icon0.png sce_sys/pic0.png \
     if [ -s "$f" ]; then
         echo "OK: $f ($(wc -c < "$f") bytes)"
     else
-        echo "ERRORE: $f"
+        echo "WARN: $f non generato"
     fi
 done
 
-identify sce_sys/icon0.png sce_sys/pic0.png \
-    sce_sys/livearea/contents/bg.png \
-    sce_sys/livearea/contents/startup.png 2>/dev/null
+identify sce_sys/icon0.png sce_sys/livearea/contents/bg.png \
+    sce_sys/livearea/contents/startup.png 2>/dev/null || true
 
 echo "Done!"
