@@ -22,6 +22,11 @@ jobs:
             echo "OK: $f"
           done
 
+      - name: Install PNG tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick optipng pngquant
+
       - name: Install VitaSDK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,6 +53,46 @@ jobs:
       - name: Copy vita source
         run: |
           cp doomgeneric_vita.c doomgeneric/doomgeneric/doomgeneric_vita.c
+
+      - name: Sanitize PNGs for Vita
+        run: |
+          chmod +x sanitize_pngs.sh
+          if [ -d assets ] && ls assets/*.png 1>/dev/null 2>&1; then
+            echo "Found assets/, sanitizing PNGs..."
+            ./sanitize_pngs.sh assets sce_sys
+          else
+            echo "No assets/ folder or no PNGs — building without custom images"
+          fi
+
+      - name: Verify sanitized PNGs
+        run: |
+          echo "=== Sanitized PNG check ==="
+          find sce_sys -name "*.png" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            file "$f"
+            identify -verbose "$f" 2>/dev/null | grep -E "Type:|Depth:|Interlace:|Resolution:" || true
+            # Verify no problematic chunks
+            python3 -c "
+          import struct, sys
+          with open('$f','rb') as fp:
+              fp.read(8)  # PNG signature
+              chunks = []
+              while True:
+                  hdr = fp.read(8)
+                  if len(hdr) < 8: break
+                  length = struct.unpack('>I', hdr[:4])[0]
+                  ctype = hdr[4:8].decode('ascii','replace')
+                  chunks.append(ctype)
+                  fp.seek(length + 4, 1)  # skip data + CRC
+              print(f'  Chunks: {chunks}')
+              bad = [c for c in chunks if c in ('iCCP','sRGB','gAMA','cHRM','tEXt','iTXt','zTXt','tIME')]
+              if bad:
+                  print(f'  WARNING: problematic chunks found: {bad}')
+                  sys.exit(1)
+              else:
+                  print(f'  OK: clean PNG')
+          " || echo "  WARN: chunk check failed for $f"
+          done || echo "No PNGs to check"
 
       - name: Build
         run: |
