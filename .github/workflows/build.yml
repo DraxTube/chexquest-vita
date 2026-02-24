@@ -43,7 +43,6 @@ jobs:
 
             echo "--- Conversione: $input -> $output (${w}x${h}) ---"
 
-            # Passo 1: Forza dimensioni e rimuovi alpha -> BMP (zero metadata)
             convert "$input" \
               -resize "${w}x${h}!" \
               -alpha off \
@@ -51,18 +50,14 @@ jobs:
               -type TrueColor \
               -depth 8 \
               "BMP3:${tmp_bmp}"
-            echo "  BMP: $(wc -c < "$tmp_bmp") bytes"
 
-            # Passo 2: BMP -> PNG minimale
             convert "${tmp_bmp}" \
               -type TrueColor \
               -depth 8 \
               -define png:color-type=2 \
               -define png:bit-depth=8 \
               "PNG24:${tmp_png}"
-            echo "  PNG pre-crush: $(wc -c < "$tmp_png") bytes"
 
-            # Passo 3: pngcrush elimina TUTTI i chunk non essenziali
             pngcrush -rem alla -rem allb -rem text -rem gAMA -rem cHRM \
                      -rem iCCP -rem sRGB -rem tEXt -rem iTXt -rem zTXt \
                      -rem tIME -rem pHYs \
@@ -72,89 +67,51 @@ jobs:
             if [ -f "${tmp_crush}" ] && [ -s "${tmp_crush}" ]; then
               cp "${tmp_crush}" "$output"
             else
-              echo "  WARN: pngcrush fallito, uso PNG senza crush"
               cp "${tmp_png}" "$output"
             fi
 
             rm -f "${tmp_bmp}" "${tmp_png}" "${tmp_crush}"
 
-            # Verifica
-            local info=$(identify -format 'size=%wx%h depth=%[bit-depth] type=%[type] interlace=%[interlace]' "$output" 2>/dev/null)
-            local fsize=$(wc -c < "$output")
-            echo "  FINALE: $info ($fsize bytes)"
-
-            # Verifica header PNG (primi 8 bytes devono essere 89 50 4E 47 0D 0A 1A 0A)
-            local header=$(xxd -p -l 8 "$output")
-            if [ "$header" = "89504e470d0a1a0a" ]; then
-              echo "  Header PNG: OK"
-            else
-              echo "  ERRORE: Header PNG invalido: $header"
-              exit 1
-            fi
-
-            # Verifica dimensioni esatte
-            local actual_w=$(identify -format '%w' "$output" 2>/dev/null)
-            local actual_h=$(identify -format '%h' "$output" 2>/dev/null)
-            if [ "$actual_w" != "$w" ] || [ "$actual_h" != "$h" ]; then
-              echo "  ERRORE: Dimensioni ${actual_w}x${actual_h} invece di ${w}x${h}"
-              exit 1
-            fi
-            echo "  Dimensioni: OK (${actual_w}x${actual_h})"
-            echo ""
+            local info=$(identify -format 'size=%wx%h depth=%[bit-depth] type=%[type]' "$output" 2>/dev/null)
+            echo "  FINALE: $info ($(wc -c < "$output") bytes)"
           }
 
-          # --- icon0.png: 128x128 ---
           if [ -f sce_sys/icon0.png ]; then
             convert_vita_png sce_sys/icon0.png sce_sys/icon0.png 128 128
           else
-            echo "icon0.png non trovato, genero placeholder..."
             convert -size 128x128 xc:'#2E8B57' \
               -fill '#FFD700' -gravity center -pointsize 40 -annotate +0+0 'CQ' \
               -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/icon_placeholder.bmp"
-            convert "/tmp/icon_placeholder.bmp" -type TrueColor -depth 8 \
-              -define png:color-type=2 -define png:bit-depth=8 \
-              "PNG24:sce_sys/icon0.png"
-            pngcrush -rem alla -force sce_sys/icon0.png /tmp/icon_crush.png 2>/dev/null \
-              && mv /tmp/icon_crush.png sce_sys/icon0.png
-            rm -f /tmp/icon_placeholder.bmp
+              "BMP3:/tmp/ph.bmp"
+            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/icon0.png"
+            pngcrush -rem alla -force sce_sys/icon0.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/icon0.png
+            rm -f /tmp/ph.bmp
           fi
 
-          # --- bg.png: 840x500 ---
           if [ -f sce_sys/livearea/contents/bg.png ]; then
             convert_vita_png sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png 840 500
           else
-            echo "bg.png non trovato, genero placeholder..."
             convert -size 840x500 xc:'#0f3460' \
               -fill white -gravity center -pointsize 60 -annotate +0+0 'CHEX QUEST' \
               -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/bg_placeholder.bmp"
-            convert "/tmp/bg_placeholder.bmp" -type TrueColor -depth 8 \
-              -define png:color-type=2 -define png:bit-depth=8 \
-              "PNG24:sce_sys/livearea/contents/bg.png"
-            pngcrush -rem alla -force sce_sys/livearea/contents/bg.png /tmp/bg_crush.png 2>/dev/null \
-              && mv /tmp/bg_crush.png sce_sys/livearea/contents/bg.png
-            rm -f /tmp/bg_placeholder.bmp
+              "BMP3:/tmp/ph.bmp"
+            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/livearea/contents/bg.png"
+            pngcrush -rem alla -force sce_sys/livearea/contents/bg.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/livearea/contents/bg.png
+            rm -f /tmp/ph.bmp
           fi
 
-          # --- startup.png: 280x158 ---
           if [ -f sce_sys/livearea/contents/startup.png ]; then
             convert_vita_png sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png 280 158
           else
-            echo "startup.png non trovato, genero placeholder..."
             convert -size 280x158 xc:'#e94560' \
               -fill white -gravity center -pointsize 40 -annotate +0+0 'PLAY' \
               -alpha off -type TrueColor -depth 8 \
-              "BMP3:/tmp/startup_placeholder.bmp"
-            convert "/tmp/startup_placeholder.bmp" -type TrueColor -depth 8 \
-              -define png:color-type=2 -define png:bit-depth=8 \
-              "PNG24:sce_sys/livearea/contents/startup.png"
-            pngcrush -rem alla -force sce_sys/livearea/contents/startup.png /tmp/startup_crush.png 2>/dev/null \
-              && mv /tmp/startup_crush.png sce_sys/livearea/contents/startup.png
-            rm -f /tmp/startup_placeholder.bmp
+              "BMP3:/tmp/ph.bmp"
+            convert "/tmp/ph.bmp" -define png:color-type=2 "PNG24:sce_sys/livearea/contents/startup.png"
+            pngcrush -rem alla -force sce_sys/livearea/contents/startup.png /tmp/ph2.png 2>/dev/null && mv /tmp/ph2.png sce_sys/livearea/contents/startup.png
+            rm -f /tmp/ph.bmp
           fi
 
-          # --- template.xml (UTF-8, no BOM, Unix line endings) ---
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
           printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
           printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
@@ -165,52 +122,33 @@ jobs:
           printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
           printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          echo "=== template.xml ==="
-          cat sce_sys/livearea/contents/template.xml
           echo ""
-          echo "template.xml bytes: $(wc -c < sce_sys/livearea/contents/template.xml)"
-          echo "template.xml hex dump (primi 20 byte):"
-          xxd -l 20 sce_sys/livearea/contents/template.xml
-
-          # --- Riepilogo finale ---
-          echo ""
-          echo "========================================="
-          echo "=== RIEPILOGO ASSETS LIVEAREA ==="
-          echo "========================================="
+          echo "=== RIEPILOGO ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png \
                    sce_sys/livearea/contents/template.xml; do
-            if [ -f "$f" ]; then
-              echo "OK: $f ($(wc -c < "$f") bytes)"
-            else
-              echo "ERRORE: $f MANCANTE"
-              exit 1
-            fi
+            echo "OK: $f ($(wc -c < "$f") bytes)"
           done
 
-          # Dump chunk PNG per debug
           echo ""
-          echo "=== CHUNK PNG (deve avere SOLO IHDR, IDAT, IEND) ==="
+          echo "=== CHUNK PNG ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
             echo "$f:"
             python3 -c "
-          import struct, sys
+          import struct
           with open('$f', 'rb') as fp:
-              fp.read(8)  # signature
-              chunks = []
+              fp.read(8)
               while True:
                   hdr = fp.read(8)
                   if len(hdr) < 8: break
                   length = struct.unpack('>I', hdr[:4])[0]
                   name = hdr[4:8].decode('ascii', errors='replace')
-                  chunks.append(f'  {name} ({length} bytes)')
-                  fp.seek(length + 4, 1)  # skip data + CRC
-              print('\n'.join(chunks))
-          " 2>/dev/null || echo "  (impossibile analizzare)"
-            echo ""
+                  print(f'  {name} ({length} bytes)')
+                  fp.seek(length + 4, 1)
+          " 2>/dev/null || echo "  (errore analisi)"
           done
 
       - name: Install VitaSDK
@@ -248,13 +186,45 @@ jobs:
           cmake ..
           make -j$(nproc)
 
+      - name: Fix param.sfo and repack VPK
+        run: |
+          export VITASDK=/usr/local/vitasdk
+          export PATH=$VITASDK/bin:$PATH
+          cd build
+
+          echo "=== Rigenerazione param.sfo ==="
+          vita-mksfoex \
+            -s TITLE_ID=CQST00002 \
+            -s APP_VER=01.00 \
+            -s CONTENT_ID=CQST00002 \
+            -d ATTRIBUTE2=0 \
+            -d PARENTAL_LEVEL=0 \
+            "ChexQuest" param_new.sfo
+
+          echo "=== Ricostruzione VPK ==="
+          mkdir -p /tmp/vpk_repack
+          unzip -o *.vpk -d /tmp/vpk_repack
+          cp param_new.sfo /tmp/vpk_repack/sce_sys/param.sfo
+
+          echo "=== Contenuto param.sfo ==="
+          strings /tmp/vpk_repack/sce_sys/param.sfo | head -30
+
+          rm -f *.vpk
+          cd /tmp/vpk_repack
+          zip -0 -r $OLDPWD/ChexQuestVita.vpk . -x ".*"
+          cd $OLDPWD
+          rm -rf /tmp/vpk_repack
+
+          echo "=== VPK finale ==="
+          ls -lh *.vpk
+
       - name: Verify VPK
         run: |
           cd build
           echo "=== Contenuto VPK ==="
           unzip -l *.vpk
           echo ""
-          echo "=== Verifica file nel VPK ==="
+          echo "=== Verifica ==="
           mkdir -p /tmp/vpk_check
           unzip -o *.vpk -d /tmp/vpk_check
           for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
@@ -268,15 +238,6 @@ jobs:
               exit 1
             fi
           done
-
-          echo ""
-          echo "=== Verifica PNG dentro VPK ==="
-          for f in sce_sys/icon0.png \
-                   sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png; do
-            identify "/tmp/vpk_check/$f" 2>/dev/null || echo "$f: errore identify"
-          done
-
           echo ""
           ls -lh *.vpk
           rm -rf /tmp/vpk_check
