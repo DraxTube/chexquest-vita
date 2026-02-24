@@ -25,8 +25,7 @@ jobs:
       - name: Install PNG tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y optipng pngquant
-
+           sudo apt-get install -y optipng python3-pil
       - name: Install VitaSDK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
