@@ -1,4 +1,4 @@
-/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v13 */
+/* doomgeneric_vita.c – Chex Quest / DOOM on PS Vita – Quick Save v14 */
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
@@ -166,10 +166,12 @@ static void analog_axis(int val, int neg_key, int pos_key,
 }
 
 /* ================================================================
-   Quick Save / Load  (L+R+UP = F6 save, L+R+DOWN = F9 load)
+   Quick Save / Load  (L+R+UP = F6+Y save, L+R+DOWN = F9+Y load)
    ================================================================ */
 static int quicksave_cooldown = 0;
 static int quickload_cooldown = 0;
+static int quicksave_confirm = 0;
+static int quickload_confirm = 0;
 
 static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
 {
@@ -183,18 +185,38 @@ static void check_quicksave(SceCtrlData *pad, SceCtrlData *prev)
     if (quicksave_cooldown > 0) quicksave_cooldown--;
     if (quickload_cooldown > 0) quickload_cooldown--;
 
-    /* L+R+UP = F6 (Quick Save) */
+    /* Conferma automatica dopo qualche frame */
+    if (quicksave_confirm > 0) {
+        quicksave_confirm--;
+        if (quicksave_confirm == 0) {
+            kq_push(1, 'y');
+            kq_push(0, 'y');
+            debug_log("Quick Save confirmed (Y)");
+        }
+    }
+    if (quickload_confirm > 0) {
+        quickload_confirm--;
+        if (quickload_confirm == 0) {
+            kq_push(1, 'y');
+            kq_push(0, 'y');
+            debug_log("Quick Load confirmed (Y)");
+        }
+    }
+
+    /* L+R+UP = F6 (Quick Save) + auto confirm */
     if (lt && rt && up && !up_was && quicksave_cooldown == 0) {
         kq_push(1, KEY_F6);
         kq_push(0, KEY_F6);
+        quicksave_confirm = 3;
         debug_log("Quick Save (F6) pressed");
         quicksave_cooldown = TICRATE;
     }
 
-    /* L+R+DOWN = F9 (Quick Load) */
+    /* L+R+DOWN = F9 (Quick Load) + auto confirm */
     if (lt && rt && dn && !dn_was && quickload_cooldown == 0) {
         kq_push(1, KEY_F9);
         kq_push(0, KEY_F9);
+        quickload_confirm = 3;
         debug_log("Quick Load (F9) pressed");
         quickload_cooldown = TICRATE;
     }
@@ -1368,7 +1390,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (Quick Save v13) ===");
+    debug_log("=== Chex Quest Vita (Quick Save v14) ===");
 
     init_display();
     if (!display_ready) {
