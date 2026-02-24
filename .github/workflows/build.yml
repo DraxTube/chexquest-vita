@@ -54,10 +54,7 @@ jobs:
           rm -rf sce_sys
           mkdir -p sce_sys/livearea/contents
 
-          # --- Download immagini ---
           TITLE_OK=0
-          LOGO_OK=0
-
           curl -sL --max-time 20 -o /tmp/chex_title_raw.png \
             "https://tcrf.net/images/1/11/Chex_Quest-title.png" 2>/dev/null || true
           if [ -s /tmp/chex_title_raw.png ] && file /tmp/chex_title_raw.png | grep -qi "PNG"; then
@@ -68,14 +65,15 @@ jobs:
             rm -f /tmp/chex_title_raw.png
           fi
 
-          # --- ICON0.PNG (128x128, DEVE essere opaco) ---
+          VITA_PNG_OPTS="-strip -interlace none -define png:color-type=6 -define png:exclude-chunks=all -depth 8"
+
+          # --- ICON0.PNG (128x128) ---
           if [ "$TITLE_OK" = "1" ]; then
             convert /tmp/chex_title_raw.png \
-              -resize 128x128^ \
-              -gravity center -extent 128x128 \
-              -background '#1a1a2e' -flatten \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/icon0.png
+              -resize 128x128^ -gravity center -extent 128x128 \
+              -background '#1a1a2e' -flatten -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/icon0.png
           else
             convert -size 128x128 xc:'#2E8B57' \
               -fill '#FFD700' -gravity center \
@@ -83,37 +81,18 @@ jobs:
               -annotate +0-8 'CQ' \
               -fill white -pointsize 11 \
               -annotate +0+16 'CHEX QUEST' \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/icon0.png
+              -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/icon0.png
           fi
 
-          # --- PIC0.PNG (960x544, opaco) ---
+          # --- BG.PNG (840x500) ---
           if [ "$TITLE_OK" = "1" ]; then
             convert /tmp/chex_title_raw.png \
-              -resize 960x544^ \
-              -gravity center -extent 960x544 \
-              -background '#000000' -flatten \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/pic0.png
-          else
-            convert -size 960x544 xc:'#1a1a2e' \
-              -fill '#FFD700' -gravity center \
-              -font DejaVu-Sans-Bold -pointsize 72 \
-              -annotate +0-40 'CHEX QUEST' \
-              -fill white -pointsize 28 \
-              -annotate +0+30 'PS Vita Edition' \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/pic0.png
-          fi
-
-          # --- BG.PNG (840x500, opaco) ---
-          if [ "$TITLE_OK" = "1" ]; then
-            convert /tmp/chex_title_raw.png \
-              -resize 840x500^ \
-              -gravity center -extent 840x500 \
-              -background '#000000' -flatten \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/livearea/contents/bg.png
+              -resize 840x500^ -gravity center -extent 840x500 \
+              -background '#000000' -flatten -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/livearea/contents/bg.png
           else
             convert -size 840x500 xc:'#0f3460' \
               -fill white -gravity center \
@@ -121,18 +100,18 @@ jobs:
               -annotate +0-20 'CHEX QUEST' \
               -fill '#cccccc' -pointsize 20 \
               -annotate +0+30 'PS Vita' \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/livearea/contents/bg.png
+              -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/livearea/contents/bg.png
           fi
 
-          # --- STARTUP.PNG (280x158, opaco) ---
+          # --- STARTUP.PNG (280x158) ---
           if [ "$TITLE_OK" = "1" ]; then
             convert /tmp/chex_title_raw.png \
-              -resize 280x158^ \
-              -gravity center -extent 280x158 \
-              -background '#000000' -flatten \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/livearea/contents/startup.png
+              -resize 280x158^ -gravity center -extent 280x158 \
+              -background '#000000' -flatten -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/livearea/contents/startup.png
           else
             convert -size 280x158 xc:'#e94560' \
               -fill white -gravity center \
@@ -140,11 +119,12 @@ jobs:
               -annotate +0-8 'PLAY' \
               -fill '#FFD700' -pointsize 14 \
               -annotate +0+22 'CHEX QUEST' \
-              -alpha off -type TrueColor -depth 8 \
-              PNG24:sce_sys/livearea/contents/startup.png
+              -alpha on -alpha set \
+              $VITA_PNG_OPTS \
+              sce_sys/livearea/contents/startup.png
           fi
 
-          # --- TEMPLATE.XML (byte per byte, zero BOM, zero spazi) ---
+          # --- TEMPLATE.XML ---
           printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
           printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
           printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
@@ -160,7 +140,7 @@ jobs:
           echo "=== VALIDAZIONE ASSETS ==="
           FAIL=0
 
-          for f in sce_sys/icon0.png sce_sys/pic0.png \
+          for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
             if [ ! -s "$f" ]; then
@@ -171,6 +151,8 @@ jobs:
             SIZE=$(wc -c < "$f")
             echo "OK: $f ($SIZE bytes)"
             identify "$f"
+            COLOR_TYPE=$(identify -verbose "$f" | grep "Type:" | head -1)
+            echo "  Color: $COLOR_TYPE"
             pngcheck "$f" || { echo "ERRORE: $f non supera pngcheck!"; FAIL=1; }
           done
 
@@ -181,13 +163,10 @@ jobs:
             echo "OK: template.xml ($(wc -c < sce_sys/livearea/contents/template.xml) bytes)"
           fi
 
-          # Verifica che template.xml inizi con '<' (0x3C), NO BOM
           FIRST_BYTE=$(xxd -l 1 -p sce_sys/livearea/contents/template.xml)
           if [ "$FIRST_BYTE" != "3c" ]; then
-            echo "ERRORE: template.xml ha BOM o spazi iniziali (primo byte: 0x$FIRST_BYTE)"
+            echo "ERRORE: template.xml ha BOM (primo byte: 0x$FIRST_BYTE)"
             FAIL=1
-          else
-            echo "OK: template.xml inizia con '<' (nessun BOM)"
           fi
 
           echo ""
@@ -233,13 +212,16 @@ jobs:
 
           echo ""
           echo "=== param.sfo ==="
-          xxd -l 64 /tmp/vpk_check/sce_sys/param.sfo
-          strings /tmp/vpk_check/sce_sys/param.sfo | head -10
+          strings /tmp/vpk_check/sce_sys/param.sfo | grep -i "chex" || echo "ATTENZIONE: nome app non trovato in param.sfo"
 
           echo ""
-          echo "=== icon0.png nel VPK ==="
-          identify /tmp/vpk_check/sce_sys/icon0.png
-          pngcheck /tmp/vpk_check/sce_sys/icon0.png || true
+          for png in sce_sys/icon0.png \
+                     sce_sys/livearea/contents/bg.png \
+                     sce_sys/livearea/contents/startup.png; do
+            echo "--- $png ---"
+            identify "/tmp/vpk_check/$png"
+            pngcheck "/tmp/vpk_check/$png" || true
+          done
 
           echo ""
           echo "=== Dimensione VPK ==="
