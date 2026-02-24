@@ -25,146 +25,192 @@ jobs:
       - name: Install image tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick optipng
+          sudo apt-get install -y imagemagick pngcrush
 
-      - name: Convert LiveArea assets to Vita-compatible PNG
+      - name: Convert LiveArea assets for PS Vita
         run: |
-          echo "=== Conversione immagini per PS Vita ==="
+          set -e
           mkdir -p sce_sys/livearea/contents
 
-          # -------------------------------------------------------
-          # icon0.png — 128x128 — RGB 24-bit (NO ALPHA!)
-          # La Vita rifiuta icon0 con canale alpha
-          # -------------------------------------------------------
-          if [ -f sce_sys/icon0.png ]; then
-            echo "Conversione icon0.png..."
-            convert sce_sys/icon0.png \
-              -resize 128x128! \
+          convert_vita_png() {
+            local input="$1"
+            local output="$2"
+            local w="$3"
+            local h="$4"
+            local tmp_bmp="/tmp/vita_$$.bmp"
+            local tmp_png="/tmp/vita_$$.png"
+            local tmp_crush="/tmp/vita_crush_$$.png"
+
+            echo "--- Conversione: $input -> $output (${w}x${h}) ---"
+
+            # Passo 1: Forza dimensioni e rimuovi alpha -> BMP (zero metadata)
+            convert "$input" \
+              -resize "${w}x${h}!" \
               -alpha off \
-              -strip \
-              -interlace none \
+              -colorspace sRGB \
+              -type TrueColor \
+              -depth 8 \
+              "BMP3:${tmp_bmp}"
+            echo "  BMP: $(wc -c < "$tmp_bmp") bytes"
+
+            # Passo 2: BMP -> PNG minimale
+            convert "${tmp_bmp}" \
+              -type TrueColor \
               -depth 8 \
               -define png:color-type=2 \
               -define png:bit-depth=8 \
-              -define png:exclude-chunks=all \
-              -define png:compression-level=9 \
-              pnm:- | convert pnm:- \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              -interlace none \
-              -depth 8 \
-              PNG24:sce_sys/icon0.png
-            optipng -quiet -strip all sce_sys/icon0.png 2>/dev/null || true
+              "PNG24:${tmp_png}"
+            echo "  PNG pre-crush: $(wc -c < "$tmp_png") bytes"
+
+            # Passo 3: pngcrush elimina TUTTI i chunk non essenziali
+            pngcrush -rem alla -rem allb -rem text -rem gAMA -rem cHRM \
+                     -rem iCCP -rem sRGB -rem tEXt -rem iTXt -rem zTXt \
+                     -rem tIME -rem pHYs \
+                     -force \
+                     "${tmp_png}" "${tmp_crush}" 2>/dev/null
+
+            if [ -f "${tmp_crush}" ] && [ -s "${tmp_crush}" ]; then
+              cp "${tmp_crush}" "$output"
+            else
+              echo "  WARN: pngcrush fallito, uso PNG senza crush"
+              cp "${tmp_png}" "$output"
+            fi
+
+            rm -f "${tmp_bmp}" "${tmp_png}" "${tmp_crush}"
+
+            # Verifica
+            local info=$(identify -format 'size=%wx%h depth=%[bit-depth] type=%[type] interlace=%[interlace]' "$output" 2>/dev/null)
+            local fsize=$(wc -c < "$output")
+            echo "  FINALE: $info ($fsize bytes)"
+
+            # Verifica header PNG (primi 8 bytes devono essere 89 50 4E 47 0D 0A 1A 0A)
+            local header=$(xxd -p -l 8 "$output")
+            if [ "$header" = "89504e470d0a1a0a" ]; then
+              echo "  Header PNG: OK"
+            else
+              echo "  ERRORE: Header PNG invalido: $header"
+              exit 1
+            fi
+
+            # Verifica dimensioni esatte
+            local actual_w=$(identify -format '%w' "$output" 2>/dev/null)
+            local actual_h=$(identify -format '%h' "$output" 2>/dev/null)
+            if [ "$actual_w" != "$w" ] || [ "$actual_h" != "$h" ]; then
+              echo "  ERRORE: Dimensioni ${actual_w}x${actual_h} invece di ${w}x${h}"
+              exit 1
+            fi
+            echo "  Dimensioni: OK (${actual_w}x${actual_h})"
+            echo ""
+          }
+
+          # --- icon0.png: 128x128 ---
+          if [ -f sce_sys/icon0.png ]; then
+            convert_vita_png sce_sys/icon0.png sce_sys/icon0.png 128 128
           else
             echo "icon0.png non trovato, genero placeholder..."
             convert -size 128x128 xc:'#2E8B57' \
               -fill '#FFD700' -gravity center -pointsize 40 -annotate +0+0 'CQ' \
-              -alpha off -strip -interlace none -depth 8 \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              PNG24:sce_sys/icon0.png
-            optipng -quiet -strip all sce_sys/icon0.png 2>/dev/null || true
+              -alpha off -type TrueColor -depth 8 \
+              "BMP3:/tmp/icon_placeholder.bmp"
+            convert "/tmp/icon_placeholder.bmp" -type TrueColor -depth 8 \
+              -define png:color-type=2 -define png:bit-depth=8 \
+              "PNG24:sce_sys/icon0.png"
+            pngcrush -rem alla -force sce_sys/icon0.png /tmp/icon_crush.png 2>/dev/null \
+              && mv /tmp/icon_crush.png sce_sys/icon0.png
+            rm -f /tmp/icon_placeholder.bmp
           fi
 
-          # -------------------------------------------------------
-          # bg.png — 840x500 — RGB 24-bit (no alpha)
-          # -------------------------------------------------------
+          # --- bg.png: 840x500 ---
           if [ -f sce_sys/livearea/contents/bg.png ]; then
-            echo "Conversione bg.png..."
-            convert sce_sys/livearea/contents/bg.png \
-              -resize 840x500! \
-              -alpha off \
-              -strip \
-              -interlace none \
-              -depth 8 \
-              pnm:- | convert pnm:- \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              -interlace none \
-              -depth 8 \
-              PNG24:sce_sys/livearea/contents/bg.png
-            optipng -quiet -strip all sce_sys/livearea/contents/bg.png 2>/dev/null || true
+            convert_vita_png sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png 840 500
           else
             echo "bg.png non trovato, genero placeholder..."
             convert -size 840x500 xc:'#0f3460' \
               -fill white -gravity center -pointsize 60 -annotate +0+0 'CHEX QUEST' \
-              -alpha off -strip -interlace none -depth 8 \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              PNG24:sce_sys/livearea/contents/bg.png
-            optipng -quiet -strip all sce_sys/livearea/contents/bg.png 2>/dev/null || true
+              -alpha off -type TrueColor -depth 8 \
+              "BMP3:/tmp/bg_placeholder.bmp"
+            convert "/tmp/bg_placeholder.bmp" -type TrueColor -depth 8 \
+              -define png:color-type=2 -define png:bit-depth=8 \
+              "PNG24:sce_sys/livearea/contents/bg.png"
+            pngcrush -rem alla -force sce_sys/livearea/contents/bg.png /tmp/bg_crush.png 2>/dev/null \
+              && mv /tmp/bg_crush.png sce_sys/livearea/contents/bg.png
+            rm -f /tmp/bg_placeholder.bmp
           fi
 
-          # -------------------------------------------------------
-          # startup.png — 280x158 — RGBA 32-bit (questo puo avere alpha)
-          # -------------------------------------------------------
+          # --- startup.png: 280x158 ---
           if [ -f sce_sys/livearea/contents/startup.png ]; then
-            echo "Conversione startup.png..."
-            convert sce_sys/livearea/contents/startup.png \
-              -resize 280x158! \
-              -strip \
-              -interlace none \
-              -depth 8 \
-              -alpha on -alpha set \
-              -background none \
-              pnm:- | convert pnm:- \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              -interlace none \
-              -depth 8 \
-              PNG24:sce_sys/livearea/contents/startup.png
-            optipng -quiet -strip all sce_sys/livearea/contents/startup.png 2>/dev/null || true
+            convert_vita_png sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png 280 158
           else
             echo "startup.png non trovato, genero placeholder..."
             convert -size 280x158 xc:'#e94560' \
               -fill white -gravity center -pointsize 40 -annotate +0+0 'PLAY' \
-              -alpha off -strip -interlace none -depth 8 \
-              -define png:color-type=2 \
-              -define png:exclude-chunks=all \
-              PNG24:sce_sys/livearea/contents/startup.png
-            optipng -quiet -strip all sce_sys/livearea/contents/startup.png 2>/dev/null || true
+              -alpha off -type TrueColor -depth 8 \
+              "BMP3:/tmp/startup_placeholder.bmp"
+            convert "/tmp/startup_placeholder.bmp" -type TrueColor -depth 8 \
+              -define png:color-type=2 -define png:bit-depth=8 \
+              "PNG24:sce_sys/livearea/contents/startup.png"
+            pngcrush -rem alla -force sce_sys/livearea/contents/startup.png /tmp/startup_crush.png 2>/dev/null \
+              && mv /tmp/startup_crush.png sce_sys/livearea/contents/startup.png
+            rm -f /tmp/startup_placeholder.bmp
           fi
 
-          # -------------------------------------------------------
-          # template.xml — UTF-8 senza BOM
-          # -------------------------------------------------------
-          printf '<?xml version="1.0" encoding="utf-8"?>\n<livearea style="a1" format-ver="01.00" content-rev="1">\n  <livearea-bg>\n    <image>bg.png</image>\n  </livearea-bg>\n  <gate>\n    <startup-image>startup.png</startup-image>\n  </gate>\n</livearea>\n' > sce_sys/livearea/contents/template.xml
+          # --- template.xml (UTF-8, no BOM, Unix line endings) ---
+          printf '<?xml version="1.0" encoding="utf-8"?>\n' > sce_sys/livearea/contents/template.xml
+          printf '<livearea style="a1" format-ver="01.00" content-rev="1">\n' >> sce_sys/livearea/contents/template.xml
+          printf '  <livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+          printf '    <image>bg.png</image>\n' >> sce_sys/livearea/contents/template.xml
+          printf '  </livearea-bg>\n' >> sce_sys/livearea/contents/template.xml
+          printf '  <gate>\n' >> sce_sys/livearea/contents/template.xml
+          printf '    <startup-image>startup.png</startup-image>\n' >> sce_sys/livearea/contents/template.xml
+          printf '  </gate>\n' >> sce_sys/livearea/contents/template.xml
+          printf '</livearea>\n' >> sce_sys/livearea/contents/template.xml
 
-          # -------------------------------------------------------
-          # Verifica finale
-          # -------------------------------------------------------
+          echo "=== template.xml ==="
+          cat sce_sys/livearea/contents/template.xml
           echo ""
-          echo "=== Verifica finale ==="
+          echo "template.xml bytes: $(wc -c < sce_sys/livearea/contents/template.xml)"
+          echo "template.xml hex dump (primi 20 byte):"
+          xxd -l 20 sce_sys/livearea/contents/template.xml
+
+          # --- Riepilogo finale ---
+          echo ""
+          echo "========================================="
+          echo "=== RIEPILOGO ASSETS LIVEAREA ==="
+          echo "========================================="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png \
                    sce_sys/livearea/contents/template.xml; do
             if [ -f "$f" ]; then
-              SIZE=$(wc -c < "$f")
-              echo "OK: $f ($SIZE bytes)"
+              echo "OK: $f ($(wc -c < "$f") bytes)"
             else
-              echo "ERRORE: $f mancante!"
+              echo "ERRORE: $f MANCANTE"
               exit 1
             fi
           done
 
+          # Dump chunk PNG per debug
           echo ""
-          echo "=== Dettagli PNG ==="
+          echo "=== CHUNK PNG (deve avere SOLO IHDR, IDAT, IEND) ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
-            INFO=$(identify -format 'size=%wx%h depth=%[bit-depth] type=%[type] channels=%[channels] interlace=%[interlace]' "$f" 2>/dev/null)
-            echo "$f: $INFO"
-          done
-
-          # Verifica che non ci siano chunk problematici
-          echo ""
-          echo "=== Chunk PNG ==="
-          for f in sce_sys/icon0.png \
-                   sce_sys/livearea/contents/bg.png \
-                   sce_sys/livearea/contents/startup.png; do
-            CHUNKS=$(identify -verbose "$f" 2>/dev/null | grep -c "chunk" || echo "0")
-            echo "$f: $CHUNKS extra chunks"
+            echo "$f:"
+            python3 -c "
+          import struct, sys
+          with open('$f', 'rb') as fp:
+              fp.read(8)  # signature
+              chunks = []
+              while True:
+                  hdr = fp.read(8)
+                  if len(hdr) < 8: break
+                  length = struct.unpack('>I', hdr[:4])[0]
+                  name = hdr[4:8].decode('ascii', errors='replace')
+                  chunks.append(f'  {name} ({length} bytes)')
+                  fp.seek(length + 4, 1)  # skip data + CRC
+              print('\n'.join(chunks))
+          " 2>/dev/null || echo "  (impossibile analizzare)"
+            echo ""
           done
 
       - name: Install VitaSDK
@@ -208,7 +254,7 @@ jobs:
           echo "=== Contenuto VPK ==="
           unzip -l *.vpk
           echo ""
-          echo "=== Verifica ==="
+          echo "=== Verifica file nel VPK ==="
           mkdir -p /tmp/vpk_check
           unzip -o *.vpk -d /tmp/vpk_check
           for f in eboot.bin sce_sys/param.sfo sce_sys/icon0.png \
@@ -222,13 +268,15 @@ jobs:
               exit 1
             fi
           done
+
           echo ""
-          echo "=== Dimensioni finali immagini nel VPK ==="
+          echo "=== Verifica PNG dentro VPK ==="
           for f in sce_sys/icon0.png \
                    sce_sys/livearea/contents/bg.png \
                    sce_sys/livearea/contents/startup.png; do
-            identify "/tmp/vpk_check/$f" 2>/dev/null || echo "$f: non verificabile"
+            identify "/tmp/vpk_check/$f" 2>/dev/null || echo "$f: errore identify"
           done
+
           echo ""
           ls -lh *.vpk
           rm -rf /tmp/vpk_check
