@@ -47,7 +47,8 @@ Both have a 1 second cooldown. The in-game save/load menu does not work, use the
 
 ## Known Issues
 
-- No LiveArea icons. The VPK ships without icon0.png, bg.png, or startup.png. Including custom PNGs causes the VPK to fail on install due to the Vita's strict PNG format requirements. The game shows a default placeholder on the home screen.
+-  ̶N̶o̶ ̶L̶i̶v̶e̶A̶r̶e̶a̶ ̶i̶c̶o̶n̶s̶.̶ ̶T̶h̶e̶ ̶V̶P̶K̶ ̶s̶h̶i̶p̶s̶ ̶w̶i̶t̶h̶o̶u̶t̶ ̶i̶c̶o̶n̶0̶.̶p̶n̶g̶,̶ ̶b̶g̶.̶p̶n̶g̶,̶ ̶o̶r̶ ̶s̶t̶a̶r̶t̶u̶p̶.̶p̶n̶g̶.̶ ̶I̶n̶c̶l̶u̶d̶i̶n̶g̶ ̶c̶u̶s̶t̶o̶m̶ ̶P̶N̶G̶s̶ ̶c̶a̶u̶s̶e̶s̶ ̶t̶h̶e̶ ̶V̶P̶K̶ ̶t̶o̶ ̶f̶a̶i̶l̶ ̶o̶n̶ ̶i̶n̶s̶t̶a̶l̶l̶ ̶d̶u̶e̶ ̶t̶o̶ ̶t̶h̶e̶ ̶V̶i̶t̶a̶'̶s̶ ̶s̶t̶r̶i̶c̶t̶ ̶P̶N̶G̶ ̶f̶o̶r̶m̶a̶t̶ ̶r̶e̶q̶u̶i̶r̶e̶m̶e̶n̶t̶s̶.̶ ̶T̶h̶e̶ ̶g̶a̶m̶e̶ ̶s̶h̶o̶w̶s̶ ̶a̶ ̶d̶e̶f̶a̶u̶l̶t̶ ̶p̶l̶a̶c̶e̶h̶o̶l̶d̶e̶r̶ ̶o̶n̶ ̶t̶h̶e̶ ̶h̶o̶m̶e̶ ̶s̶c̶r̶e̶e̶n̶.̶
+Thanks to the work of LatinWizard99 the game has asset complete
 - Music is simplified. Only 9 OPL voices, single-voice instruments only. Two-voice GENMIDI patches are not rendered correctly. Music sounds noticeably different from the original PC version.
 - Pitch bend is parsed but ignored. Notes play at fixed pitch regardless of MUS pitch bend events.
 - No gamma control. usegamma is hardcoded to 0.
