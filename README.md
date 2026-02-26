@@ -37,12 +37,10 @@ Save files and debug logs are written to the same directory.
 | Menu              | Start                       |
 | Confirm           | Select                      |
 
-Weapon cycling: hold L trigger and press D-pad Up/Down/Left/Right.
+Weapon cycling:press D-pad Left/Right.
 
-Direct weapon select: touch the top of the front touchscreen (divided into 7 zones, left to right = weapons 1-7).
-
-Quick save: L + R + D-pad Up (saves to slot 0).
-Quick load: L + R + D-pad Down (loads from slot 0).
+Quick save: D-pad Up (saves to slot 0).
+Quick load: D-pad Down (loads from slot 0).
 Both have a 1 second cooldown. The in-game save/load menu does not work, use these combos instead.
 
 ## Known Issues
