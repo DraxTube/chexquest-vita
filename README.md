@@ -27,7 +27,7 @@ Save files and debug logs are written to the same directory.
 
 | Action            | Input                       |
 |-------------------|-----------------------------|
-| Move              | Left stick or D-pad         |
+| Move              | Left stick                  |
 | Turn              | Right stick                 |
 | Fire              | Square or R trigger         |
 | Use / Open        | Cross                       |
