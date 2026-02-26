@@ -153,6 +153,12 @@ static int weapon_cycle_cooldown = 0;
 static int quicksave_cooldown = 0;
 static int quickload_cooldown = 0;
 
+/* ── FIX: delayed weapon key release ────────────────────── */
+static unsigned char weapon_key_pending = 0;
+static int weapon_release_timer = 0;
+#define WEAPON_HOLD_FRAMES 4
+/* ──────────────────────────────────────────────────────── */
+
 static void kq_push(int p, unsigned char k)
 {
     int n = (kq_w + 1) % KQUEUE_SZ;
@@ -172,6 +178,22 @@ static void analog_axis(int val, int neg_key, int pos_key,
     if ( want_pos && !*pos_held) { kq_push(1, pos_key); *pos_held = 1; }
     if (!want_pos &&  *pos_held) { kq_push(0, pos_key); *pos_held = 0; }
 }
+
+/* ── Helper: send a weapon key with delayed release ────── */
+static void send_weapon_key(unsigned char key)
+{
+    /* release any previous weapon key that is still held */
+    if (weapon_key_pending) {
+        kq_push(0, weapon_key_pending);
+        weapon_key_pending = 0;
+        weapon_release_timer = 0;
+    }
+    /* press the new weapon key */
+    kq_push(1, key);
+    weapon_key_pending = key;
+    weapon_release_timer = WEAPON_HOLD_FRAMES;
+}
+/* ──────────────────────────────────────────────────────── */
 
 /* ================================================================
    Poll input
@@ -196,7 +218,17 @@ static void do_poll_input(void)
     if (quicksave_cooldown > 0) quicksave_cooldown--;
     if (quickload_cooldown > 0) quickload_cooldown--;
 
-    /* Buttons (unchanged) */
+    /* ── FIX: handle delayed weapon key release ────────── */
+    if (weapon_release_timer > 0) {
+        weapon_release_timer--;
+        if (weapon_release_timer == 0 && weapon_key_pending != 0) {
+            kq_push(0, weapon_key_pending);
+            weapon_key_pending = 0;
+        }
+    }
+    /* ──────────────────────────────────────────────────── */
+
+    /* Buttons */
     {
         struct { unsigned btn; unsigned char key; } bm[] = {
             { SCE_CTRL_CROSS,    KEY_USE        },
@@ -253,26 +285,24 @@ static void do_poll_input(void)
             quickload_cooldown = TICRATE;
         }
 
-        /* LEFT = previous weapon */
+        /* LEFT = previous weapon (FIX: delayed release) */
         if (lf_now && !lf_was && weapon_cycle_cooldown == 0) {
             current_weapon--;
             if (current_weapon < 1) current_weapon = 7;
-            kq_push(1, '0' + current_weapon);
-            kq_push(0, '0' + current_weapon);
-            weapon_cycle_cooldown = 5;
+            send_weapon_key('0' + current_weapon);
+            weapon_cycle_cooldown = 10;
         }
 
-        /* RIGHT = next weapon */
+        /* RIGHT = next weapon (FIX: delayed release) */
         if (rt_now && !rt_was && weapon_cycle_cooldown == 0) {
             current_weapon++;
             if (current_weapon > 7) current_weapon = 1;
-            kq_push(1, '0' + current_weapon);
-            kq_push(0, '0' + current_weapon);
-            weapon_cycle_cooldown = 5;
+            send_weapon_key('0' + current_weapon);
+            weapon_cycle_cooldown = 10;
         }
     }
 
-    /* Analog sticks (unchanged) */
+    /* Analog sticks */
     analog_axis(pad.ly - 128, KEY_UPARROW,   KEY_DOWNARROW,
                 &analog_held[0], &analog_held[1]);
     analog_axis(pad.lx - 128, KEY_STRAFE_L,  KEY_STRAFE_R,
@@ -280,16 +310,16 @@ static void do_poll_input(void)
     analog_axis(pad.rx - 128, KEY_LEFTARROW, KEY_RIGHTARROW,
                 &analog_held[4], &analog_held[5]);
 
-    /* Touch weapon select (unchanged) */
+    /* Touch weapon select (FIX: delayed release) */
     {
         SceTouchData touch;
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
         if (touch.reportNum > 0 && touch.report[0].y / 2 < 60) {
             int slot = (touch.report[0].x / 2) / (VITA_W / 7);
-            if (slot >= 0 && slot < 7) {
+            if (slot >= 0 && slot < 7 && weapon_cycle_cooldown == 0) {
                 current_weapon = slot + 1;
-                kq_push(1, '1' + slot);
-                kq_push(0, '1' + slot);
+                send_weapon_key('1' + slot);
+                weapon_cycle_cooldown = 10;
             }
         }
     }
@@ -1332,7 +1362,7 @@ int main(int argc, char **argv)
     sceIoMkdir("ux0:/data/chexquest/", 0777);
 
     sceIoRemove("ux0:/data/chexquest/debug.log");
-    debug_log("=== Chex Quest Vita (Simple D-pad v16) ===");
+    debug_log("=== Chex Quest Vita (Weapon Fix v17) ===");
 
     init_display();
     if (!display_ready) {
